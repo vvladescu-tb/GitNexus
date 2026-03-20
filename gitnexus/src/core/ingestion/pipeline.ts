@@ -21,6 +21,7 @@ import { createWorkerPool, WorkerPool } from './workers/worker-pool.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { computeFileHashes, diffFileHashes } from '../../storage/file-hasher.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -42,6 +43,8 @@ export const runPipelineFromRepo = async (
   repoPath: string,
   onProgress: (progress: PipelineProgress) => void,
   options?: PipelineOptions,
+  /** Previous file hashes for incremental mode. When provided, only files with changed hashes are re-parsed. */
+  previousFileHashes?: Record<string, string>,
 ): Promise<PipelineResult> => {
   const graph = createKnowledgeGraph();
   const ctx = createResolutionContext();
@@ -99,13 +102,26 @@ export const runPipelineFromRepo = async (
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
     });
 
+    // ── Incremental: compute hashes and filter to changed files ────────
+    const allFilePaths = scannedFiles.map(f => f.path);
+    const currentFileHashes = await computeFileHashes(repoPath, allFilePaths);
+    const hashDiff = diffFileHashes(currentFileHashes, previousFileHashes);
+    const changedFileSet = previousFileHashes ? new Set(hashDiff.changed) : undefined;
+
+    if (changedFileSet) {
+      console.log(`  Incremental: ${hashDiff.changed.length} changed, ${hashDiff.removed.length} removed, ${hashDiff.unchanged} unchanged`);
+    }
+
     // ── Phase 3+4: Chunked read + parse ────────────────────────────────
     // Group parseable files into byte-budget chunks so only ~20MB of source
     // is in memory at a time. Each chunk is: read → parse → extract → free.
 
     const parseableScanned = scannedFiles.filter(f => {
       const lang = getLanguageFromFilename(f.path);
-      return lang && isLanguageAvailable(lang);
+      if (!lang || !isLanguageAvailable(lang)) return false;
+      // In incremental mode, skip unchanged files
+      if (changedFileSet && !changedFileSet.has(f.path)) return false;
+      return true;
     });
 
     // Warn about files skipped due to unavailable parsers
@@ -479,7 +495,7 @@ export const runPipelineFromRepo = async (
 
     astCache.clear();
 
-    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult };
+    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult, fileHashes: currentFileHashes };
   } catch (error) {
     cleanup();
     throw error;

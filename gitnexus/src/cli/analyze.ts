@@ -9,7 +9,7 @@ import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
-import { initLbug, loadGraphToLbug, getLbugStats, executeQuery, executeWithReusedStatement, closeLbug, createFTSIndex, loadCachedEmbeddings } from '../core/lbug/lbug-adapter.js';
+import { initLbug, loadGraphToLbug, getLbugStats, executeQuery, executeWithReusedStatement, closeLbug, createFTSIndex, loadCachedEmbeddings, deleteNodesForFile } from '../core/lbug/lbug-adapter.js';
 // Embedding imports are lazy (dynamic import) so onnxruntime-node is never
 // loaded when embeddings are not requested. This avoids crashes on Node
 // versions whose ABI is not yet supported by the native binary (#89).
@@ -18,6 +18,7 @@ import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getG
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
+import { computeFileHashes, diffFileHashes } from '../storage/file-hasher.js';
 import fs from 'fs/promises';
 
 
@@ -45,6 +46,7 @@ function ensureHeap(): boolean {
 
 export interface AnalyzeOptions {
   force?: boolean;
+  incremental?: boolean;
   embeddings?: boolean;
   skills?: boolean;
   verbose?: boolean;
@@ -202,32 +204,75 @@ export const analyzeCommand = async (
     }
   }
 
+  // ── Incremental: compute file hashes and diff against stored ────────
+  const isIncremental = !!(options?.incremental && existingMeta?.fileHashes && !options?.force);
+
   // ── Phase 1: Full Pipeline (0–60%) ─────────────────────────────────
   const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
     const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
     const scaled = Math.round(progress.percent * 0.6);
     updateBar(scaled, phaseLabel);
-  });
+  }, isIncremental ? { skipGraphPhases: true } : undefined,
+     isIncremental ? existingMeta!.fileHashes : undefined);
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────────
   updateBar(60, 'Loading into LadybugDB...');
 
-  await closeLbug();
-  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
-  for (const f of lbugFiles) {
-    try { await fs.rm(f, { recursive: true, force: true }); } catch {}
+  const t0Lbug = Date.now();
+  let lbugWarnings: string[] = [];
+  let incrementalDeletedNodes = 0;
+  let incrementalDeletedFiles = 0;
+
+  if (isIncremental) {
+    // Incremental path: open existing DB, delete stale nodes, append new ones
+    const hashDiff = diffFileHashes(pipelineResult.fileHashes ?? {}, existingMeta!.fileHashes);
+    const filesToDelete = [...hashDiff.changed, ...hashDiff.removed];
+
+    await initLbug(lbugPath);
+
+    for (const filePath of filesToDelete) {
+      try {
+        const { deletedNodes } = await deleteNodesForFile(filePath);
+        incrementalDeletedNodes += deletedNodes;
+        incrementalDeletedFiles++;
+      } catch { /* file may not have been indexed — skip */ }
+    }
+
+    let lbugMsgCount = 0;
+    const lbugResult = await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
+      lbugMsgCount++;
+      const progress = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
+      updateBar(progress, msg);
+    });
+    lbugWarnings = lbugResult.warnings;
+
+    // Merge file hashes: keep previous for unchanged, update for changed, drop removed
+    const mergedHashes: Record<string, string> = { ...existingMeta!.fileHashes };
+    for (const f of hashDiff.removed) delete mergedHashes[f];
+    for (const [file, hash] of Object.entries(pipelineResult.fileHashes ?? {})) {
+      mergedHashes[file] = hash;
+    }
+    // Overwrite pipeline fileHashes with merged so saveMeta stores the full set
+    (pipelineResult as any).fileHashes = mergedHashes;
+  } else {
+    // Full rebuild path: wipe and recreate LadybugDB
+    await closeLbug();
+    const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
+    for (const f of lbugFiles) {
+      try { await fs.rm(f, { recursive: true, force: true }); } catch {}
+    }
+
+    await initLbug(lbugPath);
+    let lbugMsgCount = 0;
+    const lbugResult = await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
+      lbugMsgCount++;
+      const progress = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
+      updateBar(progress, msg);
+    });
+    lbugWarnings = lbugResult.warnings;
   }
 
-  const t0Lbug = Date.now();
-  await initLbug(lbugPath);
-  let lbugMsgCount = 0;
-  const lbugResult = await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
-    lbugMsgCount++;
-    const progress = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
-    updateBar(progress, msg);
-  });
   const lbugTime = ((Date.now() - t0Lbug) / 1000).toFixed(1);
-  const lbugWarnings = lbugResult.warnings;
 
   // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
   updateBar(85, 'Creating search indexes...');
@@ -314,6 +359,7 @@ export const analyzeCommand = async (
       processes: pipelineResult.processResult?.stats.totalProcesses,
       embeddings: embeddingCount,
     },
+    fileHashes: pipelineResult.fileHashes,
   };
   await saveMeta(storagePath, meta);
   await registerRepo(repoPath, meta);
@@ -365,6 +411,9 @@ export const analyzeCommand = async (
 
   // ── Summary ───────────────────────────────────────────────────────
   const embeddingsCached = cachedEmbeddings.length > 0;
+  if (isIncremental && incrementalDeletedFiles > 0) {
+    console.log(`\n  Incremental: deleted ${incrementalDeletedNodes} nodes from ${incrementalDeletedFiles} files, re-parsed ${incrementalDeletedFiles} files`);
+  }
   console.log(`\n  Repository indexed successfully (${totalTime}s)${embeddingsCached ? ` [${cachedEmbeddings.length} embeddings cached]` : ''}\n`);
   console.log(`  ${stats.nodes.toLocaleString()} nodes | ${stats.edges.toLocaleString()} edges | ${pipelineResult.communityResult?.stats.totalCommunities || 0} clusters | ${pipelineResult.processResult?.stats.totalProcesses || 0} flows`);
   console.log(`  LadybugDB ${lbugTime}s | FTS ${ftsTime}s | Embeddings ${embeddingSkipped ? embeddingSkipReason : embeddingTime + 's'}`);
