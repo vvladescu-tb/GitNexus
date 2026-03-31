@@ -151,6 +151,22 @@ gitnexus wiki [path]             # Generate LLM-powered docs from knowledge grap
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
 ```
 
+## Docker / Container Usage
+
+The `entrypoint.sh` script indexes all repositories mounted under `/data/repos/` and starts the eval-server.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GITNEXUS_INCREMENTAL` | `0` | Set to `1` to enable incremental mode — uses per-file SHA-256 hashes to skip unchanged files, making re-indexes significantly faster. Has no effect when the global registry is empty (a full index is always required on first run). |
+
+Example:
+
+```bash
+docker run -e GITNEXUS_INCREMENTAL=1 -v /path/to/repos:/data/repos gitnexus
+```
+
 ## Multi-Repo Support
 
 GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically.

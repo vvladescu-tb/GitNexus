@@ -7,6 +7,7 @@ INCREMENTAL_FLAG=""
 if [ ! -f "$HOME/.gitnexus/registry.json" ] || [ "$(cat "$HOME/.gitnexus/registry.json" 2>/dev/null)" = "[]" ] || [ "$(cat "$HOME/.gitnexus/registry.json" 2>/dev/null)" = "" ]; then
   FORCE_FLAG="--force"
   echo "Global registry empty — forcing re-index to register repos"
+# GITNEXUS_INCREMENTAL=1 — skip unchanged files using per-file SHA-256 hashes (faster re-index)
 elif [ "${GITNEXUS_INCREMENTAL:-0}" = "1" ]; then
   INCREMENTAL_FLAG="--incremental"
 fi

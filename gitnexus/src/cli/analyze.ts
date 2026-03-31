@@ -18,7 +18,7 @@ import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getG
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
-import { computeFileHashes, diffFileHashes } from '../storage/file-hasher.js';
+import { diffFileHashes } from '../storage/file-hasher.js';
 import fs from 'fs/promises';
 
 
@@ -253,7 +253,7 @@ export const analyzeCommand = async (
       mergedHashes[file] = hash;
     }
     // Overwrite pipeline fileHashes with merged so saveMeta stores the full set
-    (pipelineResult as any).fileHashes = mergedHashes;
+    pipelineResult.fileHashes = mergedHashes;
   } else {
     // Full rebuild path: wipe and recreate LadybugDB
     await closeLbug();
