@@ -155,7 +155,7 @@ npx gitnexus analyze --embeddings    # also generate embeddings for new/changed 
 npx gitnexus analyze --drop-embeddings  # explicit opt-in to wipe existing embeddings
 ```
 
-`analyze` runs **incrementally by default**: only files whose content has changed since the last index are re-parsed (chunk-level parse cache at `.gitnexus/parse-cache.json`) and only their rows are rewritten in LadybugDB. Output is byte-equivalent to a full rebuild. Pass `--force` to wipe and re-index from scratch (e.g., to recover from a corrupt index, or after upgrading GitNexus).
+`analyze` runs **incrementally by default**. The pipeline still parses every file every run (cross-file resolution and downstream phases need the full graph), but a chunk-level parse cache at `.gitnexus/parse-cache.json` skips the tree-sitter worker dispatch for chunks whose contents are unchanged, and only files whose content changed have their LadybugDB rows rewritten. The cache key includes a parser-grammar fingerprint, so a tree-sitter upgrade automatically invalidates the cache and forces a fresh parse. Output is byte-equivalent to a full rebuild. Pass `--force` to wipe and re-index from scratch (e.g., to recover from a corrupt index — parser upgrades self-recover via fingerprint change).
 
 The parse cache is **content-addressed**, so it survives `--force` runs. Safe to delete `.gitnexus/parse-cache.json` at any time — it'll be rebuilt on the next analyze.
 

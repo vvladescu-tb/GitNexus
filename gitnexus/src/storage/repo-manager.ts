@@ -218,12 +218,27 @@ export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> =>
 };
 
 /**
- * Save metadata to storage
+ * Save metadata to storage atomically (Finding 5).
+ *
+ * The dirty-flag mechanism (`incrementalInProgress`) requires that
+ * meta.json never be observed in a half-written state — a crash mid-
+ * `writeFile` produces JSON that fails `loadMeta` parsing, after which
+ * the orchestrator falls back to a full rebuild. Safe, but the
+ * corrupt file persists until the next successful run, which is
+ * surprising during operator triage.
+ *
+ * Pattern matches `saveParseCache`: write to a sibling `.tmp` file then
+ * atomically `rename` over the canonical path. POSIX rename within a
+ * directory is atomic; on Windows it's atomic when the target doesn't
+ * exist and effectively atomic when it does (replace-on-rename is the
+ * default for fs/promises since Node 14).
  */
 export const saveMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
   await fs.mkdir(storagePath, { recursive: true });
   const metaPath = path.join(storagePath, 'meta.json');
-  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+  const tmpPath = `${metaPath}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(meta, null, 2), 'utf-8');
+  await fs.rename(tmpPath, metaPath);
 };
 
 /**

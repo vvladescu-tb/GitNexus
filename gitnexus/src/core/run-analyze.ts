@@ -35,7 +35,7 @@ import {
   INCREMENTAL_SCHEMA_VERSION,
 } from '../storage/repo-manager.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
-import { extractChangedSubgraph } from './incremental/subgraph-extract.js';
+import { extractChangedSubgraph, computeEffectiveWriteSet } from './incremental/subgraph-extract.js';
 import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
 import {
   getCurrentCommit,
@@ -436,8 +436,18 @@ export async function runFullAnalysis(
     let lbugMsgCount = 0;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
-      // 1. Delete rows for files we're about to rewrite + deleted files.
-      const filesToDelete = [...hashDiff.toWrite, ...hashDiff.deleted];
+      // 1. Compute the EFFECTIVE write-set: hashDiff.toWrite expanded to
+      //    include 1-hop file neighbours (Finding 1). When file C
+      //    changes (e.g. a barrel re-export), unchanged file A's
+      //    cross-file edges may resolve differently in the new graph.
+      //    Without expansion, A's stale rows survive in the DB and the
+      //    new edges never land. Expansion adds A to the delete+rewrite
+      //    set so its rows are refreshed in lockstep with C's.
+      const effectiveWriteSet = computeEffectiveWriteSet(
+        pipelineResult.graph,
+        new Set(hashDiff.toWrite),
+      );
+      const filesToDelete = [...effectiveWriteSet, ...hashDiff.deleted];
       for (let i = 0; i < filesToDelete.length; i++) {
         const f = filesToDelete[i];
         try {
@@ -455,8 +465,10 @@ export async function runFullAnalysis(
       await deleteAllCommunitiesAndProcesses();
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write
-      //    only that. Unchanged-file rows in the DB stay untouched.
-      const subgraph = extractChangedSubgraph(pipelineResult.graph, new Set(hashDiff.toWrite));
+      //    only that. Unchanged-file rows in the DB stay untouched. Pass
+      //    the SAME effectiveWriteSet so the subgraph and the deletes
+      //    cover identical files (asymmetry would silently corrupt).
+      const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
       await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
         lbugMsgCount++;
         const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
