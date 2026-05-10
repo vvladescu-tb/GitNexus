@@ -1,6 +1,6 @@
 /**
  * Repository Manager
- * 
+ *
  * Manages GitNexus index storage in .gitnexus/ at repo root.
  * Also maintains a global registry at ~/.gitnexus/registry.json
  * so the MCP server can discover indexed repos from any cwd.
@@ -22,6 +22,8 @@ export interface RepoMeta {
     processes?: number;
     embeddings?: number;
   };
+  /** Per-file SHA-256 hashes for incremental scanning. Keys are repo-relative paths. */
+  fileHashes?: Record<string, string>;
 }
 
 export interface IndexedRepo {
@@ -105,10 +107,14 @@ export const cleanupOldKuzuFiles = async (
     }
     // Delete kuzu database file and its sidecars (.wal, .lock)
     for (const suffix of ['', '.wal', '.lock']) {
-      try { await fs.unlink(oldPath + suffix); } catch {}
+      try {
+        await fs.unlink(oldPath + suffix);
+      } catch {}
     }
     // Also handle the case where kuzu was stored as a directory
-    try { await fs.rm(oldPath, { recursive: true, force: true }); } catch {}
+    try {
+      await fs.rm(oldPath, { recursive: true, force: true });
+    } catch {}
     return { found: true, needsReindex };
   } catch {
     // Old path doesn't exist — nothing to do
@@ -158,7 +164,7 @@ export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> =>
   const paths = getStoragePaths(repoPath);
   const meta = await loadMeta(paths.storagePath);
   if (!meta) return null;
-  
+
   return {
     repoPath: path.resolve(repoPath),
     ...paths,
@@ -172,13 +178,13 @@ export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> =>
 export const findRepo = async (startPath: string): Promise<IndexedRepo | null> => {
   let current = path.resolve(startPath);
   const root = path.parse(current).root;
-  
+
   while (current !== root) {
     const repo = await loadRepo(current);
     if (repo) return repo;
     current = path.dirname(current);
   }
-  
+
   return null;
 };
 
@@ -187,12 +193,12 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
  */
 export const addToGitignore = async (repoPath: string): Promise<void> => {
   const gitignorePath = path.join(repoPath, '.gitignore');
-  
+
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
     if (content.includes(GITNEXUS_DIR)) return;
-    
-    const newContent = content.endsWith('\n') 
+
+    const newContent = content.endsWith('\n')
       ? `${content}${GITNEXUS_DIR}\n`
       : `${content}\n${GITNEXUS_DIR}\n`;
     await fs.writeFile(gitignorePath, newContent, 'utf-8');
@@ -253,9 +259,7 @@ export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<vo
   const existing = entries.findIndex((e) => {
     const a = path.resolve(e.path);
     const b = resolved;
-    return process.platform === 'win32'
-      ? a.toLowerCase() === b.toLowerCase()
-      : a === b;
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
   });
 
   const entry: RegistryEntry = {
@@ -283,9 +287,7 @@ export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<vo
 export const unregisterRepo = async (repoPath: string): Promise<void> => {
   const resolved = path.resolve(repoPath);
   const entries = await readRegistry();
-  const filtered = entries.filter(
-    (e) => path.resolve(e.path) !== resolved
-  );
+  const filtered = entries.filter((e) => path.resolve(e.path) !== resolved);
   await writeRegistry(filtered);
 };
 
@@ -293,7 +295,9 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
  * List all registered repos from the global registry.
  * Optionally validates that each entry's .gitnexus/ still exists.
  */
-export const listRegisteredRepos = async (opts?: { validate?: boolean }): Promise<RegistryEntry[]> => {
+export const listRegisteredRepos = async (opts?: {
+  validate?: boolean;
+}): Promise<RegistryEntry[]> => {
   const entries = await readRegistry();
   if (!opts?.validate) return entries;
 
@@ -322,6 +326,12 @@ export interface CLIConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  provider?: 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+  cursorModel?: string;
+  /** Azure api-version query param (e.g. '2024-10-21'). Only used when provider is 'azure'. */
+  apiVersion?: string;
+  /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */
+  isReasoningModel?: boolean;
 }
 
 /**
@@ -353,6 +363,10 @@ export const saveCLIConfig = async (config: CLIConfig): Promise<void> => {
   await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
   // Restrict file permissions on Unix (config may contain API keys)
   if (process.platform !== 'win32') {
-    try { await fs.chmod(configPath, 0o600); } catch { /* best-effort */ }
+    try {
+      await fs.chmod(configPath, 0o600);
+    } catch {
+      /* best-effort */
+    }
   }
 };

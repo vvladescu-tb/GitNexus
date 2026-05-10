@@ -1,6 +1,6 @@
 /**
  * Embedding Pipeline Types
- * 
+ *
  * Type definitions for the embedding generation and semantic search system.
  */
 
@@ -8,15 +8,9 @@
  * Node labels that should be embedded for semantic search
  * These are code elements that benefit from semantic matching
  */
-export const EMBEDDABLE_LABELS = [
-  'Function',
-  'Class', 
-  'Method',
-  'Interface',
-  'File',
-] as const;
+export const EMBEDDABLE_LABELS = ['Function', 'Class', 'Method', 'Interface', 'File'] as const;
 
-export type EmbeddableLabel = typeof EMBEDDABLE_LABELS[number];
+export type EmbeddableLabel = (typeof EMBEDDABLE_LABELS)[number];
 
 /**
  * Check if a label should be embedded
@@ -27,7 +21,7 @@ export const isEmbeddableLabel = (label: string): label is EmbeddableLabel =>
 /**
  * Embedding pipeline phases
  */
-export type EmbeddingPhase = 
+export type EmbeddingPhase =
   | 'idle'
   | 'loading-model'
   | 'embedding'
@@ -53,7 +47,7 @@ export interface EmbeddingProgress {
  * Configuration for the embedding pipeline
  */
 export interface EmbeddingConfig {
-  /** Model identifier for transformers.js */
+  /** Model identifier for transformers.js (local) or the HTTP endpoint model name */
   modelId: string;
   /** Number of nodes to embed in each batch */
   batchSize: number;
@@ -114,4 +108,3 @@ export interface ModelProgress {
   loaded?: number;
   total?: number;
 }
-

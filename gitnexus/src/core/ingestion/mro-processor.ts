@@ -19,9 +19,10 @@
  * Cypher: MATCH (c:Class)-[r:CodeRelation {type: 'OVERRIDES'}]->(m:Method)
  */
 
-import { KnowledgeGraph, GraphRelationship } from '../graph/types.js';
+import { KnowledgeGraph } from '../graph/types.js';
 import { generateId } from '../../lib/utils.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { SupportedLanguages } from 'gitnexus-shared';
+import { getProvider } from './languages/index.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -31,14 +32,14 @@ export interface MROEntry {
   classId: string;
   className: string;
   language: SupportedLanguages;
-  mro: string[];               // linearized parent names
+  mro: string[]; // linearized parent names
   ambiguities: MethodAmbiguity[];
 }
 
 export interface MethodAmbiguity {
   methodName: string;
   definedIn: Array<{ classId: string; className: string; methodId: string }>;
-  resolvedTo: string | null;   // winning methodId or null if truly ambiguous
+  resolvedTo: string | null; // winning methodId or null if truly ambiguous
   reason: string;
 }
 
@@ -95,10 +96,7 @@ function buildAdjacency(graph: KnowledgeGraph) {
  * Gather all ancestor IDs in BFS / topological order.
  * Returns the linearized list of ancestor IDs (excluding the class itself).
  */
-function gatherAncestors(
-  classId: string,
-  parentMap: Map<string, string[]>,
-): string[] {
+function gatherAncestors(classId: string, parentMap: Map<string, string[]>): string[] {
   const visited = new Set<string>();
   const order: string[] = [];
   const queue: string[] = [...(parentMap.get(classId) ?? [])];
@@ -167,14 +165,14 @@ function c3Linearize(
   const sequences = [...parentLinearizations, [...directParents]];
   const result: string[] = [];
 
-  while (sequences.some(s => s.length > 0)) {
+  while (sequences.some((s) => s.length > 0)) {
     // Find a good head: one that doesn't appear in the tail of any other sequence
     let head: string | null = null;
     for (const seq of sequences) {
       if (seq.length === 0) continue;
       const candidate = seq[0];
       const inTail = sequences.some(
-        other => other.length > 1 && other.indexOf(candidate, 1) !== -1
+        (other) => other.length > 1 && other.indexOf(candidate, 1) !== -1,
       );
       if (!inTail) {
         head = candidate;
@@ -209,7 +207,7 @@ function c3Linearize(
 // ---------------------------------------------------------------------------
 
 type MethodDef = { classId: string; className: string; methodId: string };
-type Resolution = { resolvedTo: string | null; reason: string };
+type Resolution = { resolvedTo: string | null; reason: string; confidence: number };
 
 /** Resolve by MRO order — first ancestor in linearized order wins. */
 function resolveByMroOrder(
@@ -219,15 +217,20 @@ function resolveByMroOrder(
   reasonPrefix: string,
 ): Resolution {
   for (const ancestorId of mroOrder) {
-    const match = defs.find(d => d.classId === ancestorId);
+    const match = defs.find((d) => d.classId === ancestorId);
     if (match) {
       return {
         resolvedTo: match.methodId,
         reason: `${reasonPrefix}: ${match.className}::${methodName}`,
+        confidence: 0.9, // MRO-ordered resolution
       };
     }
   }
-  return { resolvedTo: defs[0].methodId, reason: `${reasonPrefix} fallback: first definition` };
+  return {
+    resolvedTo: defs[0].methodId,
+    reason: `${reasonPrefix} fallback: first definition`,
+    confidence: 0.7,
+  };
 }
 
 function resolveCsharpJava(
@@ -251,13 +254,15 @@ function resolveCsharpJava(
     return {
       resolvedTo: classDefs[0].methodId,
       reason: `class method wins: ${classDefs[0].className}::${methodName}`,
+      confidence: 0.95, // Class method is authoritative
     };
   }
 
   if (interfaceDefs.length > 1) {
     return {
       resolvedTo: null,
-      reason: `ambiguous: ${methodName} defined in multiple interfaces: ${interfaceDefs.map(d => d.className).join(', ')}`,
+      reason: `ambiguous: ${methodName} defined in multiple interfaces: ${interfaceDefs.map((d) => d.className).join(', ')}`,
+      confidence: 0.5,
     };
   }
 
@@ -265,10 +270,11 @@ function resolveCsharpJava(
     return {
       resolvedTo: interfaceDefs[0].methodId,
       reason: `single interface default: ${interfaceDefs[0].className}::${methodName}`,
+      confidence: 0.85, // Single interface, unambiguous
     };
   }
 
-  return { resolvedTo: null, reason: 'no resolution found' };
+  return { resolvedTo: null, reason: 'no resolution found', confidence: 0.5 };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,13 +296,14 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
     const classNode = graph.getNode(classId);
     if (!classNode) continue;
 
-    const language = classNode.properties.language;
+    const language = classNode.properties.language as SupportedLanguages | undefined;
     if (!language) continue;
     const className = classNode.properties.name;
 
-    // Compute linearized MRO depending on language
+    // Compute linearized MRO depending on language strategy
+    const provider = getProvider(language);
     let mroOrder: string[];
-    if (language === SupportedLanguages.Python) {
+    if (provider.mroStrategy === 'c3') {
       const c3Result = c3Linearize(classId, parentMap, c3Cache);
       mroOrder = c3Result ?? gatherAncestors(classId, parentMap);
     } else {
@@ -305,7 +312,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
     // Get the parent names for the MRO entry
     const mroNames: string[] = mroOrder
-      .map(id => graph.getNode(id)?.properties.name)
+      .map((id) => graph.getNode(id)?.properties.name)
       .filter((n): n is string => n !== undefined);
 
     // Collect methods from all ancestors, grouped by method name
@@ -328,7 +335,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           methodsByName.set(methodName, defs);
         }
         // Avoid duplicates (same method seen via multiple paths)
-        if (!defs.some(d => d.methodId === methodId)) {
+        if (!defs.some((d) => d.methodId === methodId)) {
           defs.push({
             classId: ancestorId,
             className: ancestorNode.properties.name,
@@ -341,8 +348,8 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
     // Detect collisions: methods defined in 2+ different ancestors
     const ambiguities: MethodAmbiguity[] = [];
 
-    // Compute transitive edge types once per class (only needed for C#/Java)
-    const needsEdgeTypes = language === SupportedLanguages.CSharp || language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin;
+    // Compute transitive edge types once per class (only needed for implements-split languages)
+    const needsEdgeTypes = provider.mroStrategy === 'implements-split';
     const classEdgeTypes = needsEdgeTypes
       ? buildTransitiveEdgeTypes(classId, parentMap, parentEdgeType)
       : undefined;
@@ -352,7 +359,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
       // Own method shadows inherited — no ambiguity
       const ownMethods = methodMap.get(classId) ?? [];
-      const ownDefinesIt = ownMethods.some(mid => {
+      const ownDefinesIt = ownMethods.some((mid) => {
         const mn = graph.getNode(mid);
         return mn?.properties.name === methodName;
       });
@@ -360,22 +367,21 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
       let resolution: Resolution;
 
-      switch (language) {
-        case SupportedLanguages.CPlusPlus:
-          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'C++ leftmost base');
+      switch (provider.mroStrategy) {
+        case 'leftmost-base':
+          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'leftmost base');
           break;
-        case SupportedLanguages.CSharp:
-        case SupportedLanguages.Java:
-        case SupportedLanguages.Kotlin:
+        case 'implements-split':
           resolution = resolveCsharpJava(methodName, defs, classEdgeTypes);
           break;
-        case SupportedLanguages.Python:
-          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'Python C3 MRO');
+        case 'c3':
+          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'C3 MRO');
           break;
-        case SupportedLanguages.Rust:
+        case 'qualified-syntax':
           resolution = {
             resolvedTo: null,
-            reason: `Rust requires qualified syntax: <Type as Trait>::${methodName}()`,
+            reason: `requires qualified syntax: <Type as Trait>::${methodName}()`,
+            confidence: 0.5,
           };
           break;
         default:
@@ -402,7 +408,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           sourceId: classId,
           targetId: resolution.resolvedTo,
           type: 'OVERRIDES',
-          confidence: 1.0,
+          confidence: resolution.confidence,
           reason: resolution.reason,
         });
         overrideEdges++;

@@ -10,13 +10,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend
-vi.mock('../../src/mcp/core/lbug-adapter.js', () => ({
-  initLbug: vi.fn().mockResolvedValue(undefined),
-  executeQuery: vi.fn().mockResolvedValue([]),
-  executeParameterized: vi.fn().mockResolvedValue([]),
-  closeLbug: vi.fn().mockResolvedValue(undefined),
-  isLbugReady: vi.fn().mockReturnValue(true),
-}));
+vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    initLbug: vi.fn().mockResolvedValue(undefined),
+    executeQuery: vi.fn().mockResolvedValue([]),
+    executeParameterized: vi.fn().mockResolvedValue([]),
+    closeLbug: vi.fn().mockResolvedValue(undefined),
+    isLbugReady: vi.fn().mockReturnValue(true),
+  };
+});
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
@@ -35,7 +39,13 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
 
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
-import { initLbug, executeQuery, executeParameterized, isLbugReady, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
+import {
+  initLbug,
+  executeQuery,
+  executeParameterized,
+  isLbugReady,
+  closeLbug,
+} from '../../src/mcp/core/lbug-adapter.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -138,8 +148,9 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('throws for unknown tool name', async () => {
-    await expect(backend.callTool('nonexistent_tool', {}))
-      .rejects.toThrow('Unknown tool: nonexistent_tool');
+    await expect(backend.callTool('nonexistent_tool', {})).rejects.toThrow(
+      'Unknown tool: nonexistent_tool',
+    );
   });
 
   it('dispatches query tool', async () => {
@@ -166,9 +177,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches cypher tool with valid read query', async () => {
-    (executeQuery as any).mockResolvedValue([
-      { name: 'test', filePath: 'src/test.ts' },
-    ]);
+    (executeQuery as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath LIMIT 5',
     });
@@ -180,7 +189,14 @@ describe('LocalBackend.callTool', () => {
 
   it('dispatches context tool', async () => {
     (executeParameterized as any).mockResolvedValue([
-      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts', startLine: 1, endLine: 10 },
+      {
+        id: 'func:main',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/index.ts',
+        startLine: 1,
+        endLine: 10,
+      },
     ]);
     const result = await backend.callTool('context', { name: 'main' });
     expect(result.status).toBe('found');
@@ -200,8 +216,22 @@ describe('LocalBackend.callTool', () => {
 
   it('context tool returns disambiguation for multiple matches', async () => {
     (executeParameterized as any).mockResolvedValue([
-      { id: 'func:main:1', name: 'main', type: 'Function', filePath: 'src/a.ts', startLine: 1, endLine: 5 },
-      { id: 'func:main:2', name: 'main', type: 'Function', filePath: 'src/b.ts', startLine: 1, endLine: 5 },
+      {
+        id: 'func:main:1',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/a.ts',
+        startLine: 1,
+        endLine: 5,
+      },
+      {
+        id: 'func:main:2',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/b.ts',
+        startLine: 1,
+        endLine: 5,
+      },
     ]);
     const result = await backend.callTool('context', { name: 'main' });
     expect(result.status).toBe('ambiguous');
@@ -232,7 +262,14 @@ describe('LocalBackend.callTool', () => {
   it('dispatches rename tool', async () => {
     (executeParameterized as any)
       .mockResolvedValueOnce([
-        { id: 'func:oldName', name: 'oldName', type: 'Function', filePath: 'src/test.ts', startLine: 1, endLine: 5 },
+        {
+          id: 'func:oldName',
+          name: 'oldName',
+          type: 'Function',
+          filePath: 'src/test.ts',
+          startLine: 1,
+          endLine: 5,
+        },
       ])
       .mockResolvedValue([]);
 
@@ -249,6 +286,140 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either symbol_name or symbol_uid');
   });
 
+  // api_impact tool
+  it('dispatches api_impact tool with route param', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        routeId: 'Route:/api/grants',
+        routeName: '/api/grants',
+        handlerFile: 'app/api/grants/route.ts',
+        responseKeys: ['data', 'pagination'],
+        errorKeys: ['error', 'message'],
+        middleware: ['withAuth'],
+        consumerName: 'GrantsList',
+        consumerFile: 'src/GrantsList.tsx',
+        fetchReason: 'fetch-url-match|keys:data,pagination',
+      },
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/grants' });
+    expect(result).toHaveProperty('route', '/api/grants');
+    expect(result).toHaveProperty('handler', 'app/api/grants/route.ts');
+    expect(result).toHaveProperty('responseShape');
+    expect(result.responseShape.success).toEqual(['data', 'pagination']);
+    expect(result.responseShape.error).toEqual(['error', 'message']);
+    expect(result).toHaveProperty('middleware', ['withAuth']);
+    expect(result).toHaveProperty('consumers');
+    expect(result.consumers).toHaveLength(1);
+    expect(result).toHaveProperty('impactSummary');
+    expect(result.impactSummary.directConsumers).toBe(1);
+    expect(result.impactSummary.riskLevel).toBe('LOW');
+  });
+
+  it('api_impact returns error when no route or file param', async () => {
+    const result = await backend.callTool('api_impact', {});
+    expect(result.error).toContain('Either "route" or "file"');
+  });
+
+  it('api_impact returns error when no routes found', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('api_impact', { route: '/api/nonexistent' });
+    expect(result.error).toContain('No routes found');
+  });
+
+  it('api_impact detects mismatches and bumps risk level', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        routeId: 'Route:/api/data',
+        routeName: '/api/data',
+        handlerFile: 'api/data.ts',
+        responseKeys: ['items'],
+        errorKeys: ['error'],
+        middleware: null,
+        consumerName: 'DataView',
+        consumerFile: 'src/DataView.tsx',
+        fetchReason: 'fetch-url-match|keys:items,meta',
+      },
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/data' });
+    expect(result.mismatches).toBeDefined();
+    expect(result.mismatches).toHaveLength(1);
+    expect(result.mismatches[0].field).toBe('meta');
+    expect(result.mismatches[0].reason).toContain('not in response shape');
+    // 1 consumer = LOW, but mismatch bumps to MEDIUM
+    expect(result.impactSummary.riskLevel).toBe('MEDIUM');
+  });
+
+  it('api_impact supports file param lookup', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        routeId: 'Route:/api/users',
+        routeName: '/api/users',
+        handlerFile: 'app/api/users/route.ts',
+        responseKeys: ['users'],
+        errorKeys: null,
+        middleware: null,
+        consumerName: null,
+        consumerFile: null,
+        fetchReason: null,
+      },
+    ]);
+    const result = await backend.callTool('api_impact', { file: 'app/api/users/route.ts' });
+    expect(result.route).toBe('/api/users');
+    expect(result.impactSummary.directConsumers).toBe(0);
+    expect(result.impactSummary.riskLevel).toBe('LOW');
+  });
+
+  it('api_impact returns array for multiple matching routes', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        routeId: 'Route:/api/a',
+        routeName: '/api/a',
+        handlerFile: 'api/a.ts',
+        responseKeys: null,
+        errorKeys: null,
+        middleware: null,
+        consumerName: null,
+        consumerFile: null,
+        fetchReason: null,
+      },
+      {
+        routeId: 'Route:/api/b',
+        routeName: '/api/b',
+        handlerFile: 'api/b.ts',
+        responseKeys: null,
+        errorKeys: null,
+        middleware: null,
+        consumerName: null,
+        consumerFile: null,
+        fetchReason: null,
+      },
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/' });
+    expect(result.routes).toHaveLength(2);
+    expect(result.total).toBe(2);
+  });
+
+  it('api_impact HIGH risk for 10+ consumers', async () => {
+    const rows = [];
+    for (let i = 0; i < 10; i++) {
+      rows.push({
+        routeId: 'Route:/api/popular',
+        routeName: '/api/popular',
+        handlerFile: 'api/popular.ts',
+        responseKeys: ['data'],
+        errorKeys: null,
+        middleware: null,
+        consumerName: `Consumer${i}`,
+        consumerFile: `src/Consumer${i}.tsx`,
+        fetchReason: null,
+      });
+    }
+    (executeParameterized as any).mockResolvedValue(rows);
+    const result = await backend.callTool('api_impact', { route: '/api/popular' });
+    expect(result.impactSummary.directConsumers).toBe(10);
+    expect(result.impactSummary.riskLevel).toBe('HIGH');
+  });
+
   // Legacy tool aliases
   it('dispatches "search" as alias for query', async () => {
     (executeParameterized as any).mockResolvedValue([]);
@@ -258,7 +429,14 @@ describe('LocalBackend.callTool', () => {
 
   it('dispatches "explore" as alias for context', async () => {
     (executeParameterized as any).mockResolvedValue([
-      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts', startLine: 1, endLine: 10 },
+      {
+        id: 'func:main',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/index.ts',
+        startLine: 1,
+        endLine: 10,
+      },
     ]);
     const result = await backend.callTool('explore', { name: 'main' });
     // explore calls context — which may return found or ambiguous depending on mock
@@ -287,15 +465,17 @@ describe('LocalBackend.resolveRepo', () => {
   it('throws when no repos are registered', async () => {
     setupNoRepos();
     await backend.init();
-    await expect(backend.callTool('query', { query: 'test' }))
-      .rejects.toThrow('No indexed repositories');
+    await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
+      'No indexed repositories',
+    );
   });
 
   it('throws for ambiguous repos without param', async () => {
     setupMultipleRepos();
     await backend.init();
-    await expect(backend.callTool('query', { query: 'test' }))
-      .rejects.toThrow('Multiple repositories indexed');
+    await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
+      'Multiple repositories indexed',
+    );
   });
 
   it('resolves repo by name parameter', async () => {
@@ -313,8 +493,9 @@ describe('LocalBackend.resolveRepo', () => {
   it('throws for unknown repo name', async () => {
     setupSingleRepo();
     await backend.init();
-    await expect(backend.callTool('query', { query: 'test', repo: 'nonexistent' }))
-      .rejects.toThrow('not found');
+    await expect(backend.callTool('query', { query: 'test', repo: 'nonexistent' })).rejects.toThrow(
+      'not found',
+    );
   });
 
   it('resolves repo case-insensitively', async () => {
@@ -417,8 +598,7 @@ describe('ensureInitialized', () => {
 
   it('handles initLbug failure gracefully', async () => {
     (initLbug as any).mockRejectedValueOnce(new Error('DB locked'));
-    await expect(backend.callTool('query', { query: 'test' }))
-      .rejects.toThrow('DB locked');
+    await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow('DB locked');
   });
 });
 
@@ -486,12 +666,14 @@ describe('LocalBackend.listRepos', () => {
     await backend.init();
     const repos = await backend.callTool('list_repos', {});
     expect(repos).toHaveLength(1);
-    expect(repos[0]).toEqual(expect.objectContaining({
-      name: 'test-project',
-      path: '/tmp/test-project',
-      indexedAt: expect.any(String),
-      lastCommit: expect.any(String),
-    }));
+    expect(repos[0]).toEqual(
+      expect.objectContaining({
+        name: 'test-project',
+        path: '/tmp/test-project',
+        indexedAt: expect.any(String),
+        lastCommit: expect.any(String),
+      }),
+    );
   });
 
   it('re-reads registry on each listRepos call', async () => {
@@ -522,7 +704,7 @@ describe('cypher tool LadybugDB not ready', () => {
     // Actually ensureInitialized checks isLbugReady and re-inits — let's make that pass
     // then the cypher method checks isLbugReady again
     (isLbugReady as any)
-      .mockReturnValueOnce(false)  // ensureInitialized check
+      .mockReturnValueOnce(false) // ensureInitialized check
       .mockReturnValueOnce(false); // cypher's own check
 
     const result = await backend.callTool('cypher', {

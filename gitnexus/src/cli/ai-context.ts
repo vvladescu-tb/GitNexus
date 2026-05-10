@@ -1,8 +1,8 @@
 /**
  * AI Context Generator
- * 
+ *
  * Creates AGENTS.md and CLAUDE.md with full inline GitNexus context.
- * AGENTS.md is the standard read by Cursor, Windsurf, OpenCode, Cline, etc.
+ * AGENTS.md is the standard read by Cursor, Windsurf, OpenCode, Codex, Cline, etc.
  * CLAUDE.md is for Claude Code which only reads that file.
  */
 
@@ -20,8 +20,12 @@ interface RepoStats {
   nodes?: number;
   edges?: number;
   communities?: number;
-  clusters?: number;       // Aggregated cluster count (what tools show)
+  clusters?: number; // Aggregated cluster count (what tools show)
   processes?: number;
+}
+
+export interface AIContextOptions {
+  skipAgentsMd?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -38,12 +42,20 @@ const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
  * - Exact tool commands with parameters — vague directives get ignored
  * - Self-review checklist — forces model to verify its own work
  */
-function generateGitNexusContent(projectName: string, stats: RepoStats, generatedSkills?: GeneratedSkillInfo[]): string {
-  const generatedRows = (generatedSkills && generatedSkills.length > 0)
-    ? generatedSkills.map(s =>
-        `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/generated/${s.name}/SKILL.md\` |`
-      ).join('\n')
-    : '';
+function generateGitNexusContent(
+  projectName: string,
+  stats: RepoStats,
+  generatedSkills?: GeneratedSkillInfo[],
+): string {
+  const generatedRows =
+    generatedSkills && generatedSkills.length > 0
+      ? generatedSkills
+          .map(
+            (s) =>
+              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/generated/${s.name}/SKILL.md\` |`,
+          )
+          .join('\n')
+      : '';
 
   const skillsTable = `| Task | Read this skill file |
 |------|---------------------|
@@ -150,7 +162,6 @@ ${skillsTable}
 ${GITNEXUS_END_MARKER}`;
 }
 
-
 /**
  * Check if a file exists
  */
@@ -171,7 +182,7 @@ async function fileExists(filePath: string): Promise<boolean> {
  */
 async function upsertGitNexusSection(
   filePath: string,
-  content: string
+  content: string,
 ): Promise<'created' | 'updated' | 'appended'> {
   const exists = await fileExists(filePath);
 
@@ -213,27 +224,33 @@ async function installSkills(repoPath: string): Promise<string[]> {
   const skills = [
     {
       name: 'gitnexus-exploring',
-      description: 'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"',
+      description:
+        'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"',
     },
     {
       name: 'gitnexus-debugging',
-      description: 'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"',
+      description:
+        'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"',
     },
     {
       name: 'gitnexus-impact-analysis',
-      description: 'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"',
+      description:
+        'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"',
     },
     {
       name: 'gitnexus-refactoring',
-      description: 'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"',
+      description:
+        'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"',
     },
     {
       name: 'gitnexus-guide',
-      description: 'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"',
+      description:
+        'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"',
     },
     {
       name: 'gitnexus-cli',
-      description: 'Use when the user needs to run GitNexus CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"',
+      description:
+        'Use when the user needs to run GitNexus CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"',
     },
   ];
 
@@ -285,20 +302,26 @@ export async function generateAIContextFiles(
   _storagePath: string,
   projectName: string,
   stats: RepoStats,
-  generatedSkills?: GeneratedSkillInfo[]
+  generatedSkills?: GeneratedSkillInfo[],
+  options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
   const content = generateGitNexusContent(projectName, stats, generatedSkills);
   const createdFiles: string[] = [];
 
-  // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
-  const agentsPath = path.join(repoPath, 'AGENTS.md');
-  const agentsResult = await upsertGitNexusSection(agentsPath, content);
-  createdFiles.push(`AGENTS.md (${agentsResult})`);
+  if (!options?.skipAgentsMd) {
+    // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
+    const agentsPath = path.join(repoPath, 'AGENTS.md');
+    const agentsResult = await upsertGitNexusSection(agentsPath, content);
+    createdFiles.push(`AGENTS.md (${agentsResult})`);
 
-  // Create CLAUDE.md (for Claude Code)
-  const claudePath = path.join(repoPath, 'CLAUDE.md');
-  const claudeResult = await upsertGitNexusSection(claudePath, content);
-  createdFiles.push(`CLAUDE.md (${claudeResult})`);
+    // Create CLAUDE.md (for Claude Code)
+    const claudePath = path.join(repoPath, 'CLAUDE.md');
+    const claudeResult = await upsertGitNexusSection(claudePath, content);
+    createdFiles.push(`CLAUDE.md (${claudeResult})`);
+  } else {
+    createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
+    createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
+  }
 
   // Install skills to .claude/skills/gitnexus/
   const installedSkills = await installSkills(repoPath);
@@ -308,4 +331,3 @@ export async function generateAIContextFiles(
 
   return { files: createdFiles };
 }
-

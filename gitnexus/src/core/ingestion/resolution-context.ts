@@ -17,7 +17,7 @@ import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
 import { createSymbolTable } from './symbol-table.js';
 import type { NamedImportBinding } from './import-processor.js';
 import { isFileInPackageDir } from './import-processor.js';
-import { walkBindingChain } from './named-binding-extraction.js';
+import { walkBindingChain } from './named-binding-processor.js';
 
 /** Resolution tier for tracking, logging, and test assertions. */
 export type ResolutionTier = 'same-file' | 'import-scoped' | 'global';
@@ -32,13 +32,16 @@ export interface TieredCandidates {
 export const TIER_CONFIDENCE: Record<ResolutionTier, number> = {
   'same-file': 0.95,
   'import-scoped': 0.9,
-  'global': 0.5,
+  global: 0.5,
 };
 
 // --- Map types ---
 export type ImportMap = Map<string, Set<string>>;
 export type PackageMap = Map<string, Set<string>>;
 export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
+/** Maps callerFile → (moduleAlias → sourceFilePath) for Python namespace imports.
+ *  e.g. `import models` in app.py → moduleAliasMap.get('app.py')?.get('models') === 'models.py' */
+export type ModuleAliasMap = Map<string, Map<string, string>>;
 
 export interface ResolutionContext {
   /**
@@ -56,13 +59,20 @@ export interface ResolutionContext {
   readonly importMap: ImportMap;
   readonly packageMap: PackageMap;
   readonly namedImportMap: NamedImportMap;
+  /** Module-alias map for Python namespace imports: callerFile → (alias → sourceFile). */
+  readonly moduleAliasMap: ModuleAliasMap;
 
   // --- Per-file cache lifecycle ---
   enableCache(filePath: string): void;
   clearCache(): void;
 
   // --- Operational ---
-  getStats(): { fileCount: number; globalSymbolCount: number; cacheHits: number; cacheMisses: number };
+  getStats(): {
+    fileCount: number;
+    globalSymbolCount: number;
+    cacheHits: number;
+    cacheMisses: number;
+  };
   clear(): void;
 }
 
@@ -71,6 +81,7 @@ export const createResolutionContext = (): ResolutionContext => {
   const importMap: ImportMap = new Map();
   const packageMap: PackageMap = new Map();
   const namedImportMap: NamedImportMap = new Map();
+  const moduleAliasMap: ModuleAliasMap = new Map();
 
   // Per-file cache state
   let cacheFile: string | null = null;
@@ -103,7 +114,7 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 2a: Import-scoped — definition in a file imported by fromFile
     const importedFiles = importMap.get(fromFile);
     if (importedFiles) {
-      const importedDefs = allDefs.filter(def => importedFiles.has(def.filePath));
+      const importedDefs = allDefs.filter((def) => importedFiles.has(def.filePath));
       if (importedDefs.length > 0) {
         return { candidates: importedDefs, tier: 'import-scoped' };
       }
@@ -112,7 +123,7 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 2b: Package-scoped — definition in a package dir imported by fromFile
     const importedPackages = packageMap.get(fromFile);
     if (importedPackages) {
-      const packageDefs = allDefs.filter(def => {
+      const packageDefs = allDefs.filter((def) => {
         for (const dirSuffix of importedPackages) {
           if (isFileInPackageDir(def.filePath, dirSuffix)) return true;
         }
@@ -173,6 +184,7 @@ export const createResolutionContext = (): ResolutionContext => {
     importMap.clear();
     packageMap.clear();
     namedImportMap.clear();
+    moduleAliasMap.clear();
     clearCache();
     cacheHits = 0;
     cacheMisses = 0;
@@ -184,6 +196,7 @@ export const createResolutionContext = (): ResolutionContext => {
     importMap,
     packageMap,
     namedImportMap,
+    moduleAliasMap,
     enableCache,
     clearCache,
     getStats,

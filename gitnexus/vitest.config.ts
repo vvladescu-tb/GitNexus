@@ -21,9 +21,9 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts'],
       exclude: [
-        'src/cli/index.ts',          // CLI entry point (commander wiring)
-        'src/server/**',              // HTTP server (requires network)
-        'src/core/wiki/**',           // Wiki generation (requires LLM)
+        'src/cli/index.ts', // CLI entry point (commander wiring)
+        'src/server/**', // HTTP server (requires network)
+        'src/core/wiki/**', // Wiki generation (requires LLM)
       ],
       // Auto-ratchet: vitest bumps thresholds when coverage exceeds them.
       // CI will fail if a PR drops below these floors.
@@ -32,7 +32,6 @@ export default defineConfig({
         branches: 23,
         functions: 28,
         lines: 27,
-        autoUpdate: true,
       },
     },
 
@@ -60,6 +59,9 @@ export default defineConfig({
             'test/integration/search-pool.test.ts',
             'test/integration/augmentation.test.ts',
             'test/integration/staleness-and-stability.test.ts',
+            'test/integration/lbug-lock-retry.test.ts',
+            'test/integration/api-impact-e2e.test.ts',
+            'test/integration/shape-check-regression.test.ts',
           ],
           fileParallelism: false,
           sequence: { groupOrder: 1 },
@@ -81,6 +83,10 @@ export default defineConfig({
             'test/integration/search-pool.test.ts',
             'test/integration/augmentation.test.ts',
             'test/integration/staleness-and-stability.test.ts',
+            'test/integration/lbug-lock-retry.test.ts',
+            'test/integration/lbug-lock-retry.test.ts',
+            'test/integration/api-impact-e2e.test.ts',
+            'test/integration/shape-check-regression.test.ts',
           ],
         },
       },

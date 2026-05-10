@@ -1,6 +1,6 @@
 /**
  * MCP Tool Definitions
- * 
+ *
  * Defines the tools that GitNexus exposes to external AI agents.
  * All tools support an optional `repo` parameter for multi-repo setups.
  */
@@ -10,13 +10,16 @@ export interface ToolDefinition {
   description: string;
   inputSchema: {
     type: 'object';
-    properties: Record<string, {
-      type: string;
-      description?: string;
-      default?: any;
-      items?: { type: string };
-      enum?: string[];
-    }>;
+    properties: Record<
+      string,
+      {
+        type: string;
+        description?: string;
+        default?: any;
+        items?: { type: string };
+        enum?: string[];
+      }
+    >;
     required: string[];
   };
 }
@@ -57,12 +60,30 @@ Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Natural language or keyword search query' },
-        task_context: { type: 'string', description: 'What you are working on (e.g., "adding OAuth support"). Helps ranking.' },
-        goal: { type: 'string', description: 'What you want to find (e.g., "existing auth validation logic"). Helps ranking.' },
+        task_context: {
+          type: 'string',
+          description: 'What you are working on (e.g., "adding OAuth support"). Helps ranking.',
+        },
+        goal: {
+          type: 'string',
+          description:
+            'What you want to find (e.g., "existing auth validation logic"). Helps ranking.',
+        },
         limit: { type: 'number', description: 'Max processes to return (default: 5)', default: 5 },
-        max_symbols: { type: 'number', description: 'Max symbols per process (default: 10)', default: 10 },
-        include_content: { type: 'boolean', description: 'Include full symbol source code (default: false)', default: false },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        max_symbols: {
+          type: 'number',
+          description: 'Max symbols per process (default: 10)',
+          default: 10,
+        },
+        include_content: {
+          type: 'boolean',
+          description: 'Include full symbol source code (default: false)',
+          default: false,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
       },
       required: ['query'],
     },
@@ -75,10 +96,10 @@ WHEN TO USE: Complex structural queries that search/explore can't answer. READ g
 AFTER THIS: Use context() on result symbols for deeper context.
 
 SCHEMA:
-- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process
+- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool
 - Multi-language nodes (use backticks): \`Struct\`, \`Enum\`, \`Trait\`, \`Impl\`, etc.
 - All edges via single CodeRelation table with 'type' property
-- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, OVERRIDES, MEMBER_OF, STEP_IN_PROCESS
+- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, OVERRIDES, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF
 - Edge properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)
 
 EXAMPLES:
@@ -110,14 +131,17 @@ OUTPUT: Returns { markdown, row_count } — results formatted as a Markdown tabl
 
 TIPS:
 - All relationships use single CodeRelation table — filter with {type: 'CALLS'} etc.
-- Community = auto-detected functional area (Leiden algorithm)
-- Process = execution flow trace from entry point to terminal
+- Community = auto-detected functional area (Leiden algorithm). Properties: heuristicLabel, cohesion, symbolCount, keywords, description, enrichedBy
+- Process = execution flow trace from entry point to terminal. Properties: heuristicLabel, processType, stepCount, communities, entryPointId, terminalId
 - Use heuristicLabel (not label) for human-readable community/process names`,
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Cypher query to execute' },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
       },
       required: ['query'],
     },
@@ -137,10 +161,20 @@ NOTE: ACCESSES edges (field read/write tracking) are included in context results
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Symbol name (e.g., "validateUser", "AuthService")' },
-        uid: { type: 'string', description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)' },
+        uid: {
+          type: 'string',
+          description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)',
+        },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
-        include_content: { type: 'boolean', description: 'Include full symbol source code (default: false)', default: false },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        include_content: {
+          type: 'boolean',
+          description: 'Include full symbol source code (default: false)',
+          default: false,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
       },
       required: [],
     },
@@ -157,9 +191,20 @@ Returns: changed symbols, affected processes, and a risk summary.`,
     inputSchema: {
       type: 'object',
       properties: {
-        scope: { type: 'string', description: 'What to analyze: "unstaged" (default), "staged", "all", or "compare"', enum: ['unstaged', 'staged', 'all', 'compare'], default: 'unstaged' },
-        base_ref: { type: 'string', description: 'Branch/commit for "compare" scope (e.g., "main")' },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        scope: {
+          type: 'string',
+          description: 'What to analyze: "unstaged" (default), "staged", "all", or "compare"',
+          enum: ['unstaged', 'staged', 'all', 'compare'],
+          default: 'unstaged',
+        },
+        base_ref: {
+          type: 'string',
+          description: 'Branch/commit for "compare" scope (e.g., "main")',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
       },
       required: [],
     },
@@ -179,11 +224,21 @@ Each edit is tagged with confidence:
       type: 'object',
       properties: {
         symbol_name: { type: 'string', description: 'Current symbol name to rename' },
-        symbol_uid: { type: 'string', description: 'Direct symbol UID from prior tool results (zero-ambiguity)' },
+        symbol_uid: {
+          type: 'string',
+          description: 'Direct symbol UID from prior tool results (zero-ambiguity)',
+        },
         new_name: { type: 'string', description: 'The new name for the symbol' },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
-        dry_run: { type: 'boolean', description: 'Preview edits without modifying files (default: true)', default: true },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        dry_run: {
+          type: 'boolean',
+          description: 'Preview edits without modifying files (default: true)',
+          default: true,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
       },
       required: ['new_name'],
     },
@@ -216,14 +271,110 @@ Confidence: 1.0 = certain, <0.8 = fuzzy match`,
       type: 'object',
       properties: {
         target: { type: 'string', description: 'Name of function, class, or file to analyze' },
-        direction: { type: 'string', description: 'upstream (what depends on this) or downstream (what this depends on)' },
-        maxDepth: { type: 'number', description: 'Max relationship depth (default: 3)', default: 3 },
-        relationTypes: { type: 'array', items: { type: 'string' }, description: 'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, OVERRIDES, ACCESSES (default: usage-based, ACCESSES excluded by default)' },
+        direction: {
+          type: 'string',
+          description: 'upstream (what depends on this) or downstream (what this depends on)',
+        },
+        maxDepth: {
+          type: 'number',
+          description: 'Max relationship depth (default: 3)',
+          default: 3,
+        },
+        relationTypes: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, OVERRIDES, ACCESSES (default: usage-based, ACCESSES excluded by default)',
+        },
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
         minConfidence: { type: 'number', description: 'Minimum confidence 0-1 (default: 0.7)' },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
       },
       required: ['target', 'direction'],
+    },
+  },
+  {
+    name: 'route_map',
+    description: `Show API route mappings: which components/hooks fetch which API endpoints, and which handler files serve them.
+
+WHEN TO USE: Understanding API consumption patterns, finding orphaned routes. For pre-change analysis, prefer \`api_impact\` which combines this data with mismatch detection and risk assessment.
+AFTER THIS: Use impact() on specific route handlers to see full blast radius.
+
+Returns: route nodes with their handlers, middleware wrapper chains (e.g., withAuth, withRateLimit), and consumers.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        route: {
+          type: 'string',
+          description: 'Filter by route path (e.g., "/api/grants"). Omit for all routes.',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'tool_map',
+    description: `Show MCP/RPC tool definitions: which tools are defined, where they're handled, and their descriptions.
+
+WHEN TO USE: Understanding tool APIs, finding tool implementations, impact analysis for tool changes.
+
+Returns: tool nodes with their handler files and descriptions.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool: { type: 'string', description: 'Filter by tool name. Omit for all tools.' },
+        repo: { type: 'string', description: 'Repository name or path.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'shape_check',
+    description: `Check response shapes for API routes against their consumers' property accesses.
+
+WHEN TO USE: Detecting mismatches between what an API route returns and what consumers expect. Finding shape drift. For pre-change analysis, prefer \`api_impact\` which combines this data with mismatch detection and risk assessment.
+REQUIRES: Route nodes with responseKeys (extracted from .json({...}) calls during indexing).
+
+Returns routes that have both detected response keys AND consumers. Shows top-level keys each endpoint returns (e.g., data, pagination, error) and what keys each consumer accesses. Reports MISMATCH status when a consumer accesses keys not present in the route's response shape.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        route: {
+          type: 'string',
+          description: 'Check a specific route (e.g., "/api/grants"). Omit to check all routes.',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'api_impact',
+    description: `Pre-change impact report for an API route handler.
+
+WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend on, what response fields they access, what middleware protects the route, and what execution flows it triggers. Requires at least "route" or "file" parameter.
+
+Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate.
+
+Returns: single route object when one match, or { routes: [...], total: N } for multiple matches. Combines route_map, shape_check, and impact data.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        route: { type: 'string', description: 'Route path (e.g., "/api/grants")' },
+        file: { type: 'string', description: 'Handler file path (alternative to route)' },
+        repo: { type: 'string', description: 'Repository name or path.' },
+      },
+      required: [],
     },
   },
 ];

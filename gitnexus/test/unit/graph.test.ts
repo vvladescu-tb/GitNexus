@@ -16,7 +16,11 @@ function makeNode(id: string, name: string, filePath: string = 'src/test.ts'): G
   };
 }
 
-function makeRel(src: string, tgt: string, type: GraphRelationship['type'] = 'CALLS'): GraphRelationship {
+function makeRel(
+  src: string,
+  tgt: string,
+  type: GraphRelationship['type'] = 'CALLS',
+): GraphRelationship {
   return {
     id: `${src}-${type}-${tgt}`,
     sourceId: src,
@@ -94,7 +98,7 @@ describe('createKnowledgeGraph', () => {
     g.addNode(makeNode('fn:a', 'a'));
     g.addNode(makeNode('fn:b', 'b'));
 
-    const ids = [...g.iterNodes()].map(n => n.id);
+    const ids = [...g.iterNodes()].map((n) => n.id);
     expect(ids).toHaveLength(2);
     expect(ids).toContain('fn:a');
     expect(ids).toContain('fn:b');
@@ -172,7 +176,7 @@ describe('createKnowledgeGraph', () => {
     g.addNode(makeNode('fn:b', 'b'));
 
     const ids: string[] = [];
-    g.forEachNode(n => ids.push(n.id));
+    g.forEachNode((n) => ids.push(n.id));
     expect(ids).toHaveLength(2);
   });
 
@@ -183,7 +187,64 @@ describe('createKnowledgeGraph', () => {
     g.addRelationship(makeRel('fn:a', 'fn:b'));
 
     const types: string[] = [];
-    g.forEachRelationship(r => types.push(r.type));
+    g.forEachRelationship((r) => types.push(r.type));
     expect(types).toEqual(['CALLS']);
+  });
+
+  // ─── removeRelationship ─────────────────────────────────────────────
+
+  it('removes a relationship by id', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeNode('fn:a', 'a'));
+    g.addNode(makeNode('fn:b', 'b'));
+    g.addRelationship(makeRel('fn:a', 'fn:b'));
+    expect(g.relationshipCount).toBe(1);
+
+    const removed = g.removeRelationship('fn:a-CALLS-fn:b');
+    expect(removed).toBe(true);
+    expect(g.relationshipCount).toBe(0);
+  });
+
+  it('removeRelationship returns false for unknown id', () => {
+    const g = createKnowledgeGraph();
+    expect(g.removeRelationship('nonexistent')).toBe(false);
+  });
+
+  it('removeRelationship returns false on second call with same id', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeNode('fn:a', 'a'));
+    g.addNode(makeNode('fn:b', 'b'));
+    g.addRelationship(makeRel('fn:a', 'fn:b'));
+
+    expect(g.removeRelationship('fn:a-CALLS-fn:b')).toBe(true);
+    expect(g.removeRelationship('fn:a-CALLS-fn:b')).toBe(false);
+  });
+
+  it('removeRelationship does not affect nodes', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeNode('fn:a', 'a'));
+    g.addNode(makeNode('fn:b', 'b'));
+    g.addRelationship(makeRel('fn:a', 'fn:b'));
+
+    g.removeRelationship('fn:a-CALLS-fn:b');
+    expect(g.nodeCount).toBe(2);
+    expect(g.getNode('fn:a')).toBeDefined();
+    expect(g.getNode('fn:b')).toBeDefined();
+  });
+
+  it('removeRelationship leaves other relationships intact', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeNode('fn:a', 'a'));
+    g.addNode(makeNode('fn:b', 'b'));
+    g.addNode(makeNode('fn:c', 'c'));
+    g.addRelationship(makeRel('fn:a', 'fn:b'));
+    g.addRelationship(makeRel('fn:b', 'fn:c'));
+    expect(g.relationshipCount).toBe(2);
+
+    g.removeRelationship('fn:a-CALLS-fn:b');
+    expect(g.relationshipCount).toBe(1);
+    const remaining = [...g.iterRelationships()];
+    expect(remaining[0].sourceId).toBe('fn:b');
+    expect(remaining[0].targetId).toBe('fn:c');
   });
 });

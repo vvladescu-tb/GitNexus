@@ -125,35 +125,51 @@ Languages benefiting: Java, Kotlin, C#, C++, TypeScript (overloading). All OOP l
 
 ---
 
-### Phase 14: Cross-File Binding Propagation
+### Phase 14: Cross-File Binding Propagation ✅
 
-**Problem:** `buildTypeEnv` is per-file. Inferred types don't cross file boundaries.
+**Shipped in** `feat/phase14-cross-file-binding-propagation`.
 
-```typescript
-// file-a.ts — fixpoint resolves: config → Config
-export const config = getConfig();
+Three enrichment mechanisms:
+- **E1:** `seedCrossFileReceiverTypes` — pre-seeds `receiverTypeName` for single-hop imported receivers (zero re-parse)
+- **E2:** `ExportedTypeMap` seeded into `importedBindings` for re-resolution pass
+- **E3:** `buildImportedReturnTypes` — cross-file return types for imported callables (local-first, SymbolTable takes precedence)
 
-// file-b.ts — config has no type
-import { config } from './file-a';
-config.validate();  // missed
-```
+Architecture:
+- Topological import ordering via Kahn's BFS (`topologicalLevelSort`, returns `{ levels, cycleCount }`)
+- Cycle-safe: files in cycles grouped in final level, no cross-cycle propagation
+- `runCrossFileBindingPropagation()` extracted as standalone pipeline phase
+- `synthesizeWildcardImportBindings()` expands whole-module imports (Go/Ruby/C/C++/Swift) into per-symbol namedImportMap entries from graph-exported symbols — runs before Phase 14
+- Worker path: `buildExportedTypeMapFromGraph` collects Tier 0 (annotated) exports only
+- Sequential path: `collectExportedBindings` captures full fixpoint-inferred exports
 
-**Approach: Export-type index.** After each file's fixpoint, export resolved bindings for exported symbols into `ExportedBindings: Map<filePath, Map<symbolName, typeName>>`. Subsequent files seed scopeEnv from this index for imported symbols.
+**Per-language Phase 14 coverage:**
+| Language | namedImportMap | ExportedTypeMap (E1/E2) | E3 (importedReturnTypes) | Benefit |
+|----------|:-:|:-:|:-:|---|
+| TypeScript | Full (named imports) | File-scope vars | Full | **High** |
+| JavaScript | Full (named imports) | File-scope vars | Full | **High** |
+| Python | from-imports | File-scope vars | Full | **High** |
+| Kotlin | Top-level fns | Top-level props | Full | **High** |
+| Rust | use clauses | Limited | Full | **High** |
+| Go | Synthesized¹ | Exported symbols | Full | **Medium** |
+| Ruby | Synthesized¹ | Exported symbols | Full | **Medium** |
+| C/C++ | Synthesized¹ | Exported symbols | Full | **Medium** |
+| Swift | Synthesized¹ | Exported symbols | Full | **Low** (Phase S blocked) |
+| PHP | use classes | Inert (class-scope) | Inert (no fn imports) | **Marginal** |
+| Java | Classes + static methods | Inert (no file-scope) | Via SymbolTable | **Medium** |
+| C# | Alias + `using static` | Inert (no file-scope) | Via SymbolTable | **Medium** |
 
-**Details:**
-- Process files in topological import order (import-processor already builds the dependency graph)
-- Re-exports: follow import chain transitively in `ExportedBindings`
-- Barrel files (`index.ts`): chain of re-exports — same mechanism
-- Default exports: keyed as `"default"` in the map, mapped to local name at import site
-- Dynamic imports (`import()`, conditional `require()`): excluded — runtime-only edges
-- Circular imports: files in a cycle processed in arbitrary order within the cycle; cross-cycle bindings don't propagate (conservative)
-- Parallelism preserved within topological levels
+¹ Whole-module import languages: namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()` (capped at 1000 per file)
 
-**Why this is last:** Every earlier phase makes the per-file fixpoint stronger, reducing cases where cross-file propagation is needed. This is also the highest-risk architectural change.
+**Named binding extraction details:**
+- Java: `import static X.Y.method` now captured (static modifier detection). Ambiguous static imports (same method from multiple classes) fall through to Tier 2a for arity narrowing.
+- C#: `using static NS.Type;` now captured (last segment as class binding). Non-alias `using NS;` remains unsupported (namespace import requires type inference).
 
-**Risks:** Topological ordering correctness (mitigated by reusing import-processor's existing graph). Re-export chain depth (bounded by import depth, typically 2-3). Memory for `ExportedBindings` (~100K entries for 10K-file monorepo — negligible).
+**Resolved limitations (this PR):**
+- ~~Worker path vs sequential path quality split~~ — workers now return file-scope TypeEnv bindings; main thread merges fixpoint-inferred exports into ExportedTypeMap (filtered by graph `isExported`)
+- ~~`lookupRawReturnType` no cross-file fallback~~ — separate `importedRawReturnTypes` map stores raw declared types (e.g., `User[]`) for for-loop element extraction via `extractElementTypeFromString`
+- ~~C++ header method declarations~~ — tree-sitter query fix: `field_identifier` added to declaration pattern alongside `identifier`, plus pointer/reference return type variants
 
-**Impact: High | Effort: High**
+**Impact: High | Effort: High** — delivered
 
 ---
 
@@ -161,14 +177,14 @@ config.validate();  // missed
 
 ```
 Milestone D (Phases A, B, C) ✅ ──┐
-                                   ├──→ Phase 14 (cross-file)
+                                   ├──→ Phase 14 (cross-file) ✅
 Phase P (polymorphism) ───────────┤
                                    │
 Phase S (Swift parity) ───────────┘
 
 Phase P.1–P.4 are delivered. P.5 (covariant return types) remains open.
 Phase P and Phase S are independent of each other and Phase 14.
-Phase 14 benefits from Phase P (better per-file resolution = fewer cross-file gaps).
+Phase 14 is delivered. Remaining open: Phase P.5, Phase S.
 ```
 
 ---
@@ -184,7 +200,7 @@ Phase 14 benefits from Phase P (better per-file resolution = fewer cross-file ga
 - ~~Virtual dispatch: `Dog()` uses `call_expression` (no `new` keyword)~~ — **RESOLVED** via `detectConstructorType` hook
 
 ### All languages
-- Cross-file binding propagation → Phase 14
+- ~~Cross-file binding propagation → Phase 14~~ — **DELIVERED** for all 13 languages via two mechanisms: (1) named import extraction (TS/JS/Python/Kotlin/Rust/PHP/Java/C#), (2) wildcard import synthesis from graph-exported symbols (Go/Ruby/C/C++/Swift). Remaining gap: C# non-alias `using NS;` (namespace import, requires type inference).
 
 ---
 
@@ -206,9 +222,9 @@ Unified fixpoint loop, call-result binding, field access binding, method-call-re
 
 Consolidated Phases 10–13 into 3 balanced phases. Loop-fixpoint bridge, MRO-aware inheritance walking, `this`/`self` resolution, object/struct destructuring, null-check narrowing. Kotlin null-check bug fix. Full 11-language integration test coverage.
 
-### Milestone E — Cross-Boundary ← **next** (Phase 14)
+### Milestone E — Cross-Boundary ✅ (Phase 14)
 
-Export-type index, cross-file binding propagation.
+Export-type index, cross-file binding propagation. Full coverage for TS/JS/Python/Kotlin. Marginal for PHP. Inert for Java/C#/Go/Ruby/C/C++ (relies on Phase 9 SymbolTable).
 
 ### Milestone P — Polymorphism & Overloading (Phase P)
 

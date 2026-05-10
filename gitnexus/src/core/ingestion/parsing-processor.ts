@@ -1,18 +1,41 @@
-import { KnowledgeGraph, GraphNode, GraphRelationship, type NodeLabel } from '../graph/types.js';
+import type { GraphNode, GraphRelationship, NodeLabel } from 'gitnexus-shared';
+import { KnowledgeGraph } from '../graph/types.js';
 import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename, yieldToEventLoop, getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature } from './utils.js';
-import { extractPropertyDeclaredType } from './type-extractors/shared.js';
-import { isNodeExported } from './export-detection.js';
+import { getLanguageFromFilename } from 'gitnexus-shared';
+import { yieldToEventLoop } from './utils/event-loop.js';
+import {
+  getDefinitionNodeFromCaptures,
+  findEnclosingClassId,
+  extractMethodSignature,
+  getLabelFromCaptures,
+  CLASS_CONTAINER_TYPES,
+  type SyntaxNode,
+} from './utils/ast-helpers.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
-import { typeConfigs } from './type-extractors/index.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { buildTypeEnv } from './type-env.js';
+import type { FieldInfo, FieldExtractorContext } from './field-types.js';
+import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
-import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
+import type {
+  ParseWorkerResult,
+  ParseWorkerInput,
+  ExtractedImport,
+  ExtractedCall,
+  ExtractedAssignment,
+  ExtractedHeritage,
+  ExtractedRoute,
+  ExtractedFetchCall,
+  ExtractedDecoratorRoute,
+  ExtractedToolDef,
+  FileConstructorBindings,
+  FileTypeEnvBindings,
+  ExtractedORMQuery,
+} from './workers/parse-worker.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
@@ -23,12 +46,13 @@ export interface WorkerExtractedData {
   assignments: ExtractedAssignment[];
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
+  fetchCalls: ExtractedFetchCall[];
+  decoratorRoutes: ExtractedDecoratorRoute[];
+  toolDefs: ExtractedToolDef[];
+  ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
+  typeEnvBindings: FileTypeEnvBindings[];
 }
-
-// isNodeExported imported from ./export-detection.js (shared module)
-// Re-export for backward compatibility with any external consumers
-export { isNodeExported } from './export-detection.js';
 
 // ============================================================================
 // Worker-based parallel parsing
@@ -49,7 +73,20 @@ const processParsingWithWorkers = async (
     if (lang) parseableFiles.push({ path: file.path, content: file.content });
   }
 
-  if (parseableFiles.length === 0) return { imports: [], calls: [], assignments: [], heritage: [], routes: [], constructorBindings: [] };
+  if (parseableFiles.length === 0)
+    return {
+      imports: [],
+      calls: [],
+      assignments: [],
+      heritage: [],
+      routes: [],
+      fetchCalls: [],
+      decoratorRoutes: [],
+      toolDefs: [],
+      ormQueries: [],
+      constructorBindings: [],
+      typeEnvBindings: [],
+    };
 
   const total = files.length;
 
@@ -67,12 +104,17 @@ const processParsingWithWorkers = async (
   const allAssignments: ExtractedAssignment[] = [];
   const allHeritage: ExtractedHeritage[] = [];
   const allRoutes: ExtractedRoute[] = [];
+  const allFetchCalls: ExtractedFetchCall[] = [];
+  const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allToolDefs: ExtractedToolDef[] = [];
+  const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
+  const allTypeEnvBindings: FileTypeEnvBindings[] = [];
   for (const result of chunkResults) {
     for (const node of result.nodes) {
       graph.addNode({
         id: node.id,
-        label: node.label as any,
+        label: node.label as NodeLabel,
         properties: node.properties,
       });
     }
@@ -97,7 +139,12 @@ const processParsingWithWorkers = async (
     allAssignments.push(...result.assignments);
     allHeritage.push(...result.heritage);
     allRoutes.push(...result.routes);
+    allFetchCalls.push(...result.fetchCalls);
+    allDecoratorRoutes.push(...result.decoratorRoutes);
+    allToolDefs.push(...result.toolDefs);
+    if (result.ormQueries) allORMQueries.push(...result.ormQueries);
     allConstructorBindings.push(...result.constructorBindings);
+    allTypeEnvBindings.push(...result.typeEnvBindings);
   }
 
   // Merge and log skipped languages from workers
@@ -116,19 +163,93 @@ const processParsingWithWorkers = async (
 
   // Final progress
   onFileProgress?.(total, total, 'done');
-  return { imports: allImports, calls: allCalls, assignments: allAssignments, heritage: allHeritage, routes: allRoutes, constructorBindings: allConstructorBindings };
+  return {
+    imports: allImports,
+    calls: allCalls,
+    assignments: allAssignments,
+    heritage: allHeritage,
+    routes: allRoutes,
+    fetchCalls: allFetchCalls,
+    decoratorRoutes: allDecoratorRoutes,
+    toolDefs: allToolDefs,
+    ormQueries: allORMQueries,
+    constructorBindings: allConstructorBindings,
+    typeEnvBindings: allTypeEnvBindings,
+  };
 };
 
 // ============================================================================
 // Sequential fallback (original implementation)
 // ============================================================================
 
+// Inline caches to avoid repeated parent-walks per node (same pattern as parse-worker.ts).
+// Keyed by tree-sitter node reference — cleared at the start of each file.
+const classIdCache = new Map<SyntaxNode, string | null>();
+const exportCache = new Map<SyntaxNode, boolean>();
+
+const cachedFindEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
+  const cached = classIdCache.get(node);
+  if (cached !== undefined) return cached;
+  const result = findEnclosingClassId(node, filePath);
+  classIdCache.set(node, result);
+  return result;
+};
+
+const cachedExportCheck = (
+  checker: (node: SyntaxNode, name: string) => boolean,
+  node: SyntaxNode,
+  name: string,
+): boolean => {
+  const cached = exportCache.get(node);
+  if (cached !== undefined) return cached;
+  const result = checker(node, name);
+  exportCache.set(node, result);
+  return result;
+};
+
+// FieldExtractor cache for sequential path — same pattern as parse-worker.ts
+const seqFieldInfoCache = new Map<number, Map<string, FieldInfo>>();
+
+function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
+  let current = node.parent;
+  while (current) {
+    if (CLASS_CONTAINER_TYPES.has(current.type)) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
+/** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential path has a real
+ *  SymbolTable, but it's incomplete at this stage — use the stub for safety). */
+const NOOP_SYMBOL_TABLE_SEQ = {
+  lookupExactAll: () => [],
+  lookupExact: () => undefined,
+  lookupExactFull: () => undefined,
+} as unknown as SymbolTable;
+
+function seqGetFieldInfo(
+  classNode: SyntaxNode,
+  provider: LanguageProvider,
+  context: FieldExtractorContext,
+): Map<string, FieldInfo> | undefined {
+  if (!provider.fieldExtractor) return undefined;
+  const cacheKey = classNode.startIndex;
+  let cached = seqFieldInfoCache.get(cacheKey);
+  if (cached) return cached;
+  const extracted = provider.fieldExtractor.extract(classNode, context);
+  if (!extracted?.fields?.length) return undefined;
+  cached = new Map<string, FieldInfo>();
+  for (const field of extracted.fields) cached.set(field.name, field);
+  seqFieldInfoCache.set(cacheKey, cached);
+  return cached;
+}
+
 const processParsingSequential = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   symbolTable: SymbolTable,
   astCache: ASTCache,
-  onFileProgress?: FileProgressCallback
+  onFileProgress?: FileProgressCallback,
 ) => {
   const parser = await loadParser();
   const total = files.length;
@@ -136,6 +257,11 @@ const processParsingSequential = async (
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
+
+    // Reset memoization before each new file (node refs are per-tree)
+    classIdCache.clear();
+    exportCache.clear();
+    seqFieldInfoCache.clear();
 
     onFileProgress?.(i + 1, total, file.path);
 
@@ -157,12 +283,14 @@ const processParsingSequential = async (
     try {
       await loadLanguage(language, file.path);
     } catch {
-      continue;  // parser unavailable — safety net
+      continue; // parser unavailable — safety net
     }
 
     let tree;
     try {
-      tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+      tree = parser.parse(file.content, undefined, {
+        bufferSize: getTreeSitterBufferSize(file.content.length),
+      });
     } catch (parseError) {
       console.warn(`Skipping unparseable file: ${file.path}`);
       continue;
@@ -170,7 +298,8 @@ const processParsingSequential = async (
 
     astCache.set(file.path, tree);
 
-    const queryString = LANGUAGE_QUERIES[language];
+    const provider = getProvider(language);
+    const queryString = provider.treeSitterQueries;
     if (!queryString) {
       continue;
     }
@@ -186,68 +315,32 @@ const processParsingSequential = async (
       continue;
     }
 
-    matches.forEach(match => {
-      const captureMap: Record<string, any> = {};
+    // Build per-file type environment for FieldExtractor context (lightweight — skipped if no fieldExtractor)
+    const typeEnv = provider.fieldExtractor
+      ? buildTypeEnv(tree, language, { enclosingFunctionFinder: provider.enclosingFunctionFinder })
+      : null;
 
-      match.captures.forEach(c => {
+    matches.forEach((match) => {
+      const captureMap: Record<string, SyntaxNode> = {};
+
+      match.captures.forEach((c) => {
         captureMap[c.name] = c.node;
       });
 
-      if (captureMap['import']) {
-        return;
-      }
-
-      if (captureMap['call']) {
-        return;
-      }
+      const nodeLabel = getLabelFromCaptures(captureMap, provider);
+      if (!nodeLabel) return;
 
       const nameNode = captureMap['name'];
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
-      if (!nameNode && !captureMap['definition.constructor']) return;
+      if (!nameNode && nodeLabel !== 'Constructor') return;
       const nodeName = nameNode ? nameNode.text : 'init';
 
-      let nodeLabel: NodeLabel = 'CodeElement';
-
-      if (captureMap['definition.function']) {
-        // C/C++: @definition.function is broad and also matches inline class methods (inside
-        // a class/struct body). Those are already captured by @definition.method, so skip
-        // the duplicate Function entry to prevent double-indexing in globalIndex.
-        if (language === SupportedLanguages.CPlusPlus || language === SupportedLanguages.C) {
-          let ancestor = captureMap['definition.function']?.parent;
-          while (ancestor) {
-            if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') {
-              break;
-            }
-            ancestor = ancestor.parent;
-          }
-          if (ancestor) return; // inside a class body — handled by @definition.method
-        }
-        nodeLabel = 'Function';
-      }
-      else if (captureMap['definition.class']) nodeLabel = 'Class';
-      else if (captureMap['definition.interface']) nodeLabel = 'Interface';
-      else if (captureMap['definition.method']) nodeLabel = 'Method';
-      else if (captureMap['definition.struct']) nodeLabel = 'Struct';
-      else if (captureMap['definition.enum']) nodeLabel = 'Enum';
-      else if (captureMap['definition.namespace']) nodeLabel = 'Namespace';
-      else if (captureMap['definition.module']) nodeLabel = 'Module';
-      else if (captureMap['definition.trait']) nodeLabel = 'Trait';
-      else if (captureMap['definition.impl']) nodeLabel = 'Impl';
-      else if (captureMap['definition.type']) nodeLabel = 'TypeAlias';
-      else if (captureMap['definition.const']) nodeLabel = 'Const';
-      else if (captureMap['definition.static']) nodeLabel = 'Static';
-      else if (captureMap['definition.typedef']) nodeLabel = 'Typedef';
-      else if (captureMap['definition.macro']) nodeLabel = 'Macro';
-      else if (captureMap['definition.union']) nodeLabel = 'Union';
-      else if (captureMap['definition.property']) nodeLabel = 'Property';
-      else if (captureMap['definition.record']) nodeLabel = 'Record';
-      else if (captureMap['definition.delegate']) nodeLabel = 'Delegate';
-      else if (captureMap['definition.annotation']) nodeLabel = 'Annotation';
-      else if (captureMap['definition.constructor']) nodeLabel = 'Constructor';
-      else if (captureMap['definition.template']) nodeLabel = 'Template';
-
       const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
-      const startLine = definitionNodeForRange ? definitionNodeForRange.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
+      const startLine = definitionNodeForRange
+        ? definitionNodeForRange.startPosition.row
+        : nameNode
+          ? nameNode.startPosition.row
+          : 0;
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
 
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
@@ -256,14 +349,21 @@ const processParsingSequential = async (
         : null;
 
       // Extract method signature for Method/Constructor nodes
-      const methodSig = (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
-        ? extractMethodSignature(definitionNode)
-        : undefined;
+      const methodSig =
+        nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor'
+          ? extractMethodSignature(definitionNode)
+          : undefined;
 
       // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
       // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
-      if (methodSig && (!methodSig.returnType || methodSig.returnType === 'array' || methodSig.returnType === 'iterable') && definitionNode) {
-        const tc = typeConfigs[language as keyof typeof typeConfigs];
+      if (
+        methodSig &&
+        (!methodSig.returnType ||
+          methodSig.returnType === 'array' ||
+          methodSig.returnType === 'iterable') &&
+        definitionNode
+      ) {
+        const tc = provider.typeConfig;
         if (tc?.extractReturnType) {
           const docReturn = tc.extractReturnType(definitionNode);
           if (docReturn) methodSig.returnType = docReturn;
@@ -272,24 +372,34 @@ const processParsingSequential = async (
 
       const node: GraphNode = {
         id: nodeId,
-        label: nodeLabel as any,
+        label: nodeLabel as NodeLabel,
         properties: {
           name: nodeName,
           filePath: file.path,
           startLine: definitionNodeForRange ? definitionNodeForRange.startPosition.row : startLine,
           endLine: definitionNodeForRange ? definitionNodeForRange.endPosition.row : startLine,
           language: language,
-          isExported: isNodeExported(nameNode || definitionNodeForRange, nodeName, language),
-          ...(frameworkHint ? {
-            astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
-            astFrameworkReason: frameworkHint.reason,
-          } : {}),
-          ...(methodSig ? {
-            parameterCount: methodSig.parameterCount,
-            ...(methodSig.requiredParameterCount !== undefined ? { requiredParameterCount: methodSig.requiredParameterCount } : {}),
-            ...(methodSig.parameterTypes ? { parameterTypes: methodSig.parameterTypes } : {}),
-            returnType: methodSig.returnType,
-          } : {}),
+          isExported: cachedExportCheck(
+            provider.exportChecker,
+            nameNode || definitionNodeForRange,
+            nodeName,
+          ),
+          ...(frameworkHint
+            ? {
+                astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
+                astFrameworkReason: frameworkHint.reason,
+              }
+            : {}),
+          ...(methodSig
+            ? {
+                parameterCount: methodSig.parameterCount,
+                ...(methodSig.requiredParameterCount !== undefined
+                  ? { requiredParameterCount: methodSig.requiredParameterCount }
+                  : {}),
+                ...(methodSig.parameterTypes ? { parameterTypes: methodSig.parameterTypes } : {}),
+                returnType: methodSig.returnType,
+              }
+            : {}),
         },
       };
 
@@ -297,13 +407,48 @@ const processParsingSequential = async (
 
       // Compute enclosing class for Method/Constructor/Property/Function — used for both ownerId and HAS_METHOD
       // Function is included because Kotlin/Rust/Python capture class methods as Function nodes
-      const needsOwner = nodeLabel === 'Method' || nodeLabel === 'Constructor' || nodeLabel === 'Property' || nodeLabel === 'Function';
-      const enclosingClassId = needsOwner ? findEnclosingClassId(nameNode || definitionNodeForRange, file.path) : null;
+      const needsOwner =
+        nodeLabel === 'Method' ||
+        nodeLabel === 'Constructor' ||
+        nodeLabel === 'Property' ||
+        nodeLabel === 'Function';
+      const enclosingClassId = needsOwner
+        ? cachedFindEnclosingClassId(nameNode || definitionNodeForRange, file.path)
+        : null;
 
-      // Extract declared type for Property nodes (field/property type annotations)
-      const declaredType = (nodeLabel === 'Property' && definitionNode)
-        ? extractPropertyDeclaredType(definitionNode)
-        : undefined;
+      // Extract declared type and field metadata for Property nodes
+      let declaredType: string | undefined;
+      let seqVisibility: string | undefined;
+      let seqIsStatic: boolean | undefined;
+      let seqIsReadonly: boolean | undefined;
+      if (nodeLabel === 'Property' && definitionNode) {
+        // FieldExtractor is the single source of truth when available
+        if (provider.fieldExtractor && typeEnv) {
+          const classNode = seqFindEnclosingClassNode(definitionNode);
+          if (classNode) {
+            const fieldMap = seqGetFieldInfo(classNode, provider, {
+              typeEnv,
+              symbolTable: NOOP_SYMBOL_TABLE_SEQ,
+              filePath: file.path,
+              language,
+            });
+            const info = fieldMap?.get(nodeName);
+            if (info) {
+              declaredType = info.type ?? undefined;
+              seqVisibility = info.visibility;
+              seqIsStatic = info.isStatic;
+              seqIsReadonly = info.isReadonly;
+            }
+          }
+        }
+        // All 14 languages register a FieldExtractor — no fallback needed.
+      }
+
+      // Apply field metadata to the graph node retroactively
+      if (seqVisibility !== undefined) node.properties.visibility = seqVisibility;
+      if (seqIsStatic !== undefined) node.properties.isStatic = seqIsStatic;
+      if (seqIsReadonly !== undefined) node.properties.isReadonly = seqIsReadonly;
+      if (declaredType !== undefined) node.properties.declaredType = declaredType;
 
       symbolTable.add(file.path, nodeName, nodeId, nodeLabel, {
         parameterCount: methodSig?.parameterCount,
@@ -366,9 +511,19 @@ export const processParsing = async (
 ): Promise<WorkerExtractedData | null> => {
   if (workerPool) {
     try {
-      return await processParsingWithWorkers(graph, files, symbolTable, astCache, workerPool, onFileProgress);
+      return await processParsingWithWorkers(
+        graph,
+        files,
+        symbolTable,
+        astCache,
+        workerPool,
+        onFileProgress,
+      );
     } catch (err) {
-      console.warn('Worker pool parsing failed, falling back to sequential:', err instanceof Error ? err.message : err);
+      console.warn(
+        'Worker pool parsing failed, falling back to sequential:',
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 

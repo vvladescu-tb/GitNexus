@@ -40,7 +40,13 @@ beforeAll(() => {
     spawnSync('git', ['commit', '-m', 'initial commit'], {
       cwd: MINI_REPO,
       stdio: 'pipe',
-      env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@test', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@test' },
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'test',
+        GIT_AUTHOR_EMAIL: 'test@test',
+        GIT_COMMITTER_NAME: 'test',
+        GIT_COMMITTER_EMAIL: 'test@test',
+      },
     });
   }
 });
@@ -107,11 +113,14 @@ describe('CLI end-to-end', () => {
     // Accept timeout as valid on slow CI
     if (result.status === null) return;
 
-    expect(result.status, [
-      `analyze exited with code ${result.status}`,
-      `stdout: ${result.stdout}`,
-      `stderr: ${result.stderr}`,
-    ].join('\n')).toBe(0);
+    expect(
+      result.status,
+      [
+        `analyze exited with code ${result.status}`,
+        `stdout: ${result.stdout}`,
+        `stderr: ${result.stderr}`,
+      ].join('\n'),
+    ).toBe(0);
 
     // Successful analyze should create .gitnexus/ output directory
     const gitnexusDir = path.join(MINI_REPO, '.gitnexus');
@@ -186,8 +195,15 @@ describe('CLI end-to-end', () => {
       try {
         spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
         spawnSync('git', ['commit', '--allow-empty', '-m', 'init'], {
-          cwd: tmpDir, stdio: 'pipe',
-          env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@test', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@test' },
+          cwd: tmpDir,
+          stdio: 'pipe',
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: 'test',
+            GIT_AUTHOR_EMAIL: 'test@test',
+            GIT_COMMITTER_NAME: 'test',
+            GIT_COMMITTER_EMAIL: 'test@test',
+          },
         });
 
         const result = runCliOutsideProject(['status'], tmpDir);
@@ -229,7 +245,95 @@ describe('CLI end-to-end', () => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
+  });
 
+  // ─── wiki command flags ─────────────────────────────────────────────
+
+  describe('wiki command flags', () => {
+    it('wiki --help shows --provider, --review, --verbose flags', () => {
+      const result = runCliRaw(['wiki', '--help'], repoRoot);
+      if (result.status === null) return;
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('--provider <provider>');
+      expect(result.stdout).toContain('--review');
+      expect(result.stdout).toContain('-v, --verbose');
+      expect(result.stdout).toContain('--model <model>');
+      expect(result.stdout).toContain('--gist');
+      expect(result.stdout).toContain('--concurrency <n>');
+    });
+
+    it('wiki on non-git directory fails with exit code 1', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-nogit-'));
+      try {
+        const result = runCliRaw(['wiki', tmpDir], repoRoot);
+        if (result.status === null) return;
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toMatch(/not.*git repository/i);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('wiki on non-indexed repo fails with "No GitNexus index"', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-noindex-'));
+      try {
+        spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
+        spawnSync('git', ['commit', '--allow-empty', '-m', 'init'], {
+          cwd: tmpDir,
+          stdio: 'pipe',
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: 'test',
+            GIT_AUTHOR_EMAIL: 'test@test',
+            GIT_COMMITTER_NAME: 'test',
+            GIT_COMMITTER_EMAIL: 'test@test',
+          },
+        });
+
+        // Must spawn outside project tree so it doesn't find parent .gitnexus
+        const result = spawnSync(
+          process.execPath,
+          ['--import', tsxImportUrl, cliEntry, 'wiki', tmpDir],
+          {
+            cwd: tmpDir,
+            encoding: 'utf8',
+            timeout: 15000,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+            },
+          },
+        );
+        if (result.status === null) return;
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toMatch(/No GitNexus index found/);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('wiki --provider cursor without API key does not prompt for key in non-TTY', () => {
+      // In non-TTY (piped stdin), --provider cursor should skip the API key prompt
+      // and proceed (or fail gracefully with Cursor CLI not found)
+      const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'cursor'], repoRoot, 15000);
+      if (result.status === null) return;
+
+      const combined = result.stdout + result.stderr;
+      // Should NOT ask for API key — cursor provider doesn't need one
+      expect(combined).not.toMatch(/API key:/);
+    });
+
+    it('wiki --help includes --verbose flag description', () => {
+      const result = runCliRaw(['wiki', '--help'], repoRoot);
+      if (result.status === null) return;
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/verbose/i);
+    });
   });
 
   // ─── stdout fd 1 tests (#324) ───────────────────────────────────────
@@ -240,7 +344,10 @@ describe('CLI end-to-end', () => {
   // has multiple indexed repos (e.g. the parent project is also indexed).
   describe('tool output goes to stdout via fd 1 (#324)', () => {
     it('cypher: JSON appears on stdout, not stderr', () => {
-      const result = runCliRaw(['cypher', 'MATCH (n) RETURN n.name LIMIT 3', '--repo', 'mini-repo'], MINI_REPO);
+      const result = runCliRaw(
+        ['cypher', 'MATCH (n) RETURN n.name LIMIT 3', '--repo', 'mini-repo'],
+        MINI_REPO,
+      );
       if (result.status === null) return; // CI timeout tolerance
 
       expect(result.status).toBe(0);
@@ -299,7 +406,15 @@ describe('CLI end-to-end', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          ['--import', 'tsx', cliEntry, 'cypher', 'MATCH (n) RETURN n LIMIT 500', '--repo', 'mini-repo'],
+          [
+            '--import',
+            'tsx',
+            cliEntry,
+            'cypher',
+            'MATCH (n) RETURN n LIMIT 500',
+            '--repo',
+            'mini-repo',
+          ],
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -311,7 +426,9 @@ describe('CLI end-to-end', () => {
         );
 
         let stderrOutput = '';
-        child.stderr.on('data', (chunk: Buffer) => { stderrOutput += chunk.toString(); });
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderrOutput += chunk.toString();
+        });
 
         // Destroy stdout immediately — simulates `| head -0` (consumer closes early)
         child.stdout.once('data', () => {

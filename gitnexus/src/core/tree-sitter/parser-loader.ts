@@ -11,16 +11,24 @@ import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { SupportedLanguages } from 'gitnexus-shared';
 
-// tree-sitter-swift is an optionalDependency — may not be installed
+// tree-sitter-swift and tree-sitter-dart are optionalDependencies — may not be installed
 const _require = createRequire(import.meta.url);
 let Swift: any = null;
-try { Swift = _require('tree-sitter-swift'); } catch {}
+try {
+  Swift = _require('tree-sitter-swift');
+} catch {}
+let Dart: any = null;
+try {
+  Dart = _require('tree-sitter-dart');
+} catch {}
 
 // tree-sitter-kotlin is an optionalDependency — may not be installed
 let Kotlin: any = null;
-try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
+try {
+  Kotlin = _require('tree-sitter-kotlin');
+} catch {}
 
 let parser: Parser | null = null;
 
@@ -38,6 +46,7 @@ const languageMap: Record<string, any> = {
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
+  ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };
 
@@ -50,11 +59,15 @@ export const loadParser = async (): Promise<Parser> => {
   return parser;
 };
 
-export const loadLanguage = async (language: SupportedLanguages, filePath?: string): Promise<void> => {
+export const loadLanguage = async (
+  language: SupportedLanguages,
+  filePath?: string,
+): Promise<void> => {
   if (!parser) await loadParser();
-  const key = language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')
-    ? `${language}:tsx`
-    : language;
+  const key =
+    language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')
+      ? `${language}:tsx`
+      : language;
 
   const lang = languageMap[key];
   if (!lang) {

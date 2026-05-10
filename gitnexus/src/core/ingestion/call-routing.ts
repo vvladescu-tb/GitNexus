@@ -11,37 +11,20 @@
  * Keep both copies in sync until a shared package is introduced.
  */
 
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import type { SyntaxNode } from './utils/ast-helpers.js';
 
 // ── Call routing dispatch table ─────────────────────────────────────────────
 
 /** null = this call was not routed; fall through to default call handling */
 export type CallRoutingResult = RubyCallRouting | null;
 
-export type CallRouter = (
-  calledName: string,
-  callNode: any,
-) => CallRoutingResult;
-
-/** No-op router: returns null for every call (passthrough to normal processing) */
-const noRouting: CallRouter = () => null;
-
-/** Per-language call routing. noRouting = no special routing (normal call processing) */
-export const callRouters = {
-  [SupportedLanguages.JavaScript]: noRouting,
-  [SupportedLanguages.TypeScript]: noRouting,
-  [SupportedLanguages.Python]: noRouting,
-  [SupportedLanguages.Java]: noRouting,
-  [SupportedLanguages.Kotlin]: noRouting,
-  [SupportedLanguages.Go]: noRouting,
-  [SupportedLanguages.Rust]: noRouting,
-  [SupportedLanguages.CSharp]: noRouting,
-  [SupportedLanguages.PHP]: noRouting,
-  [SupportedLanguages.Swift]: noRouting,
-  [SupportedLanguages.CPlusPlus]: noRouting,
-  [SupportedLanguages.C]: noRouting,
-  [SupportedLanguages.Ruby]: routeRubyCall,
-} satisfies Record<SupportedLanguages, CallRouter>;
+/**
+ * Per-language call router.
+ * IMPORTANT: Call-routed imports bypass preprocessImportPath(), so any router that
+ * returns an importPath MUST validate it independently (length cap, control-char
+ * rejection). See routeRubyCall for the reference implementation.
+ */
+export type CallRouter = (calledName: string, callNode: SyntaxNode) => CallRoutingResult;
 
 // ── Result types ────────────────────────────────────────────────────────────
 
@@ -85,12 +68,12 @@ const MAX_PARENT_DEPTH = 50;
  * @param callNode   - The tree-sitter `call` AST node
  * @returns A discriminated union describing the call's semantic role
  */
-export function routeRubyCall(calledName: string, callNode: any): RubyCallRouting {
+export function routeRubyCall(calledName: string, callNode: SyntaxNode): RubyCallRouting {
   // ── require / require_relative → import ─────────────────────────────────
   if (calledName === 'require' || calledName === 'require_relative') {
     const argList = callNode.childForFieldName?.('arguments');
-    const stringNode = argList?.children?.find((c: any) => c.type === 'string');
-    const contentNode = stringNode?.children?.find((c: any) => c.type === 'string_content');
+    const stringNode = argList?.children?.find((c: SyntaxNode) => c.type === 'string');
+    const contentNode = stringNode?.children?.find((c: SyntaxNode) => c.type === 'string_content');
     if (!contentNode) return SKIP_RESULT;
 
     let importPath: string = contentNode.text;
@@ -113,7 +96,10 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
     while (current && ++depth <= MAX_PARENT_DEPTH) {
       if (current.type === 'class' || current.type === 'module') {
         const nameNode = current.childForFieldName?.('name');
-        if (nameNode) { enclosingClass = nameNode.text; break; }
+        if (nameNode) {
+          enclosingClass = nameNode.text;
+          break;
+        }
       }
       current = current.parent;
     }
@@ -121,16 +107,24 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
 
     const items: RubyHeritageItem[] = [];
     const argList = callNode.childForFieldName?.('arguments');
-    for (const arg of (argList?.children ?? [])) {
+    for (const arg of argList?.children ?? []) {
       if (arg.type === 'constant' || arg.type === 'scope_resolution') {
-        items.push({ enclosingClass, mixinName: arg.text, heritageKind: calledName as 'include' | 'extend' | 'prepend' });
+        items.push({
+          enclosingClass,
+          mixinName: arg.text,
+          heritageKind: calledName as 'include' | 'extend' | 'prepend',
+        });
       }
     }
     return items.length > 0 ? { kind: 'heritage', items } : SKIP_RESULT;
   }
 
   // ── attr_accessor / attr_reader / attr_writer → property definitions ───
-  if (calledName === 'attr_accessor' || calledName === 'attr_reader' || calledName === 'attr_writer') {
+  if (
+    calledName === 'attr_accessor' ||
+    calledName === 'attr_reader' ||
+    calledName === 'attr_writer'
+  ) {
     // Extract YARD @return [Type] from preceding comment (e.g. `# @return [Address]`)
     let yardType: string | undefined;
     let sibling = callNode.previousSibling;
@@ -152,7 +146,7 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
 
     const items: RubyPropertyItem[] = [];
     const argList = callNode.childForFieldName?.('arguments');
-    for (const arg of (argList?.children ?? [])) {
+    for (const arg of argList?.children ?? []) {
       if (arg.type === 'simple_symbol') {
         items.push({
           propName: arg.text.startsWith(':') ? arg.text.slice(1) : arg.text,

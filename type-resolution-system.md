@@ -9,7 +9,7 @@ This system is designed to be:
 - **Conservative** — it prefers missing a binding over introducing a misleading one
 - **Walk + fixpoint** — bindings are collected during a single AST walk, then a unified fixpoint loop iterates over pending assignments (copy, callResult, fieldAccess, methodCallResult) until no new bindings are produced
 - **Scope-aware** — function-local bindings are isolated from file-level bindings
-- **Per-file** — the environment is built for one file at a time, though it may consult the global `SymbolTable` for validation in specific cases
+- **Per-file with cross-file seeding** — the environment is built for one file at a time, but Phase 14 seeds upstream bindings (imported types, return types) into the file scope before the fixpoint for all 13 languages
 
 It is **not** a full compiler type checker. Its job is to recover enough type information to improve call-edge accuracy during ingestion.
 
@@ -120,9 +120,15 @@ It does:
 It does not:
 
 - perform full semantic type checking
-- run fixpoint inference
-- propagate inferred bindings across files as ordinary environment entries
 - guarantee resolution for every ambiguous construct
+
+It now does (Phase 14):
+
+- run a unified fixpoint loop per file for copy/callResult/fieldAccess/methodCallResult chains
+- propagate inferred bindings across files for all 13 supported languages:
+  - **Named import extraction** (TS/JS/Python/Kotlin/Rust/PHP/Java/C#): per-symbol bindings extracted from import AST nodes
+  - **Wildcard import synthesis** (Go/Ruby/C/C++/Swift): namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()`, enabling cross-file propagation for whole-module-import languages
+- seed imported bindings into file scope after walk, before fixpoint (local declarations always win)
 
 ---
 
@@ -369,26 +375,27 @@ So return-type-aware receiver inference already exists in a constrained downstre
 
 ## Language Feature Matrix
 
-| Feature | TS | JS | Java | Kotlin | C# | Go | Rust | Python | PHP | Ruby | Swift | C++ | C |
-|---------|:--:|:--:|:----:|:------:|:--:|:--:|:----:|:------:|:---:|:----:|:-----:|:---:|:-:|
-| Declarations | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Parameters | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Initializer / constructor inference | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Constructor binding scan | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| For-loop element types | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
-| Pattern binding | Yes | Yes | Yes | Yes | No | Yes | Yes | No | No | No | No | No | No |
-| Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes |
-| Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | Yes* | Yes | YARD | No | Yes | No‡ |
-| Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
-| Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
-| Call-result variable binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | No | Yes | No |
-| Field access binding | Yes | No† | Yes | Yes | Yes | Yes | Yes | No‖ | Yes | N/A | No | Yes | No |
-| Method-call-result binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | No | Yes | No |
-| Write access (ACCESSES write) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes§ | Yes | Yes | Yes | No |
-| Parameter types extracted | Yes** | No | Yes | Yes | Yes | Yes | Yes | Partial†† | No | No | No | Yes | No |
-| Method overload disambiguation | Yes** | No | Yes | Yes | Yes | No | No | No | No | No | No | Yes | No |
-| Constructor-visible virtual dispatch | Yes | No | Yes | Yes‡‡ | Yes | No | No | No | No | No | No | Yes§§ | No |
-| Optional parameter arity resolution | Yes | No | No | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes | No |
+| Feature | TS | JS | Java | Kotlin | C# | Go | Rust | Python | PHP | Ruby | Swift | C++ | C | Dart |
+|---------|:--:|:--:|:----:|:------:|:--:|:--:|:----:|:------:|:---:|:----:|:-----:|:---:|:-:|:----:|
+| Declarations | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Parameters | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Initializer / constructor inference | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Constructor binding scan | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| For-loop element types | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes††† | Yes | Yes | Yes |
+| Pattern binding | Yes | Yes | Yes | Yes | No | Yes | Yes | No | No | No | Partial‡‡‡ | No | No | No |
+| Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes | Yes |
+| Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | Yes* | Yes | YARD | No | Yes | No‡ | No |
+| Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No |
+| Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No |
+| Call-result variable binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes |
+| Field access binding | Yes | No† | Yes | Yes | Yes | Yes | Yes | No‖ | Yes | N/A | Yes††† | Yes | No | Yes |
+| Method-call-result binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes |
+| Write access (ACCESSES write) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes§ | Yes | Yes | Yes | No | Yes |
+| Parameter types extracted | Yes** | No | Yes | Yes | Yes | Yes | Yes | Partial†† | No | No | No | Yes | No | No |
+| Method overload disambiguation | Yes** | No | Yes | Yes | Yes | No | No | No | No | No | No | Yes | No | No |
+| Constructor-visible virtual dispatch | Yes | No | Yes | Yes‡‡ | Yes | No | No | No | No | No | No | Yes§§ | No | Yes |
+| Optional parameter arity resolution | Yes | No | No | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes | No | No |
+| Cross-file binding propagation | Yes | Yes | Yes‖‖ | Yes | Yes¶¶ | Yes*** | Yes | Yes | Partial | Yes*** | Yes*** | Yes*** | Yes*** | Yes*** |
 
 \* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
 
@@ -412,6 +419,16 @@ So return-type-aware receiver inference already exists in a constrained downstre
 
 §§ C++ smart pointer virtual dispatch supported for `make_shared<T>()`/`make_unique<T>()` factory patterns. Raw pointer `new` also supported.
 
+‖‖ Java: `import static X.Y.method` now captured. Ambiguous static imports (same name from multiple classes) fall through to Tier 2a for arity narrowing. Non-static lowercase imports still skipped (package imports).
+
+¶¶ C#: `using static NS.Type;` now captured (last segment as class binding). Non-alias `using NS;` still unsupported — namespace imports can't be reduced to per-symbol bindings without type inference.
+
+††† Swift: `extractPendingAssignment` handles `callResult`, `methodCallResult`, `fieldAccess`, and `copy` bindings. `if let` / `guard let` optional bindings supported via `extractIfGuardBinding`. `await` / `try` expression wrappers are unwrapped before RHS analysis. For-loop element type extraction supports `[User]` array sugar and `Array<User>` generics. See `swift-ingestion-gaps.md` for remaining limitations.
+
+‡‡‡ Swift: `if let` / `guard let` optional bindings supported. `while let`, `switch` / `case` pattern matching, and tuple destructuring not yet implemented.
+
+\*\*\* Whole-module-import languages (Go, Ruby, C/C++, Swift): namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()`. Not from import AST node extraction.
+
 ---
 
 ## Current Strengths
@@ -432,6 +449,7 @@ The current system provides strong value for call resolution because it combines
 - method overload disambiguation via argument literal types (Java, Kotlin, C#, C++)
 - constructor-visible virtual dispatch for same-file subclasses (Java, C#, TypeScript, C++, Kotlin)
 - optional/default parameter arity resolution — calls with omitted optional args still resolve (TS, Python, Kotlin, C#, C++, PHP, Ruby)
+- cross-file binding propagation across all 13 languages — named import extraction for languages with per-symbol imports, wildcard import synthesis for whole-module-import languages (Go, Ruby, C/C++, Swift)
 
 This is enough to materially improve call-edge precision even without implementing a full static type system.
 
@@ -444,7 +462,7 @@ Important gaps still remain:
 - no general cross-file propagation of inferred bindings
 - `this`/`self`/`$this` receivers are not resolved in the fixpoint loop (resolved on-demand at call sites via AST walk instead)
 - limited branch-sensitive narrowing outside selected pattern constructs
-- limited Swift support compared with other languages
+- limited Swift support compared with other languages (see `swift-ingestion-gaps.md`)
 - no complete destructuring-based field typing
 - no MRO/inheritance walking for field lookups (`lookupFieldByOwner` is direct-only)
 - for-loop variables bound at walk time cannot see fixpoint-resolved types (Phase 9B gap)

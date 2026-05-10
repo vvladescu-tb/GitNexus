@@ -11,25 +11,37 @@ const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 const program = new Command();
 
-program
-  .name('gitnexus')
-  .description('GitNexus local CLI and MCP server')
-  .version(pkg.version);
+program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
 
 program
   .command('setup')
-  .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode')
+  .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex')
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
   .command('analyze [path]')
-  .description('Index a repository (full analysis)')
+  .description('Index a repository (full or incremental analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
+  .option('-i, --incremental', 'Only re-parse files changed since last index (uses SHA-256 hashes)')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option('--skills', 'Generate repo-specific skill files from detected communities')
-   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
-   .addHelpText('after', '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1  Skip .gitignore parsing (still reads .gitnexusignore)')
-   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option('--skip-git', 'Index a folder without requiring a .git directory')
+  .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
+  .addHelpText(
+    'after',
+    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1  Skip .gitignore parsing (still reads .gitnexusignore)',
+  )
+  .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+
+program
+  .command('index [path...]')
+  .description(
+    'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
+  )
+  .option('-f, --force', 'Register even if meta.json is missing (stats will be empty)')
+  .option('--allow-non-git', 'Allow registering folders that are not Git repositories')
+  .action(createLazyAction(() => import('./index-repo.js'), 'indexCommand'));
 
 program
   .command('serve')
@@ -64,11 +76,26 @@ program
   .command('wiki [path]')
   .description('Generate repository wiki from knowledge graph')
   .option('-f, --force', 'Force full regeneration even if up to date')
-  .option('--model <model>', 'LLM model name (default: minimax/minimax-m2.5)')
-  .option('--base-url <url>', 'LLM API base URL (default: OpenAI)')
-  .option('--api-key <key>', 'LLM API key (saved to ~/.gitnexus/config.json)')
+  .option('--provider <provider>', 'LLM provider: openai or cursor (default: openai)')
+  .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
+  .option(
+    '--base-url <url>',
+    'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
+  )
+  .option('--api-key <key>', 'LLM API key or Azure api-key (saved to ~/.gitnexus/config.json)')
+  .option(
+    '--api-version <version>',
+    'Azure api-version query param, e.g. 2024-10-21 (legacy Azure API only)',
+  )
+  .option(
+    '--reasoning-model',
+    'Mark deployment as reasoning model (o1/o3/o4-mini) — strips temperature, uses max_completion_tokens',
+  )
+  .option('--no-reasoning-model', 'Disable reasoning model mode (overrides saved config)')
   .option('--concurrency <n>', 'Parallel LLM calls (default: 3)', '3')
   .option('--gist', 'Publish wiki as a public GitHub Gist after generation')
+  .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
+  .option('--review', 'Stop after grouping to review module structure before generating pages')
   .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program

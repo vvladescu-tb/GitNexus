@@ -2,6 +2,109 @@
 
 All notable changes to GitNexus will be documented in this file.
 
+## [1.4.10] - 2026-03-27
+
+### Fixed
+- **MCP server install via npx** — resolve tree-sitter peer dependency conflicts that broke `npx -y gitnexus@latest mcp` (#537, #538)
+  - Downgrade tree-sitter from ^0.25.0 to ^0.21.1 (only npm version where all 14 parsers agree)
+  - Align all parser versions to their highest ^0.21.x-compatible releases
+  - Remove tree-sitter override (only applies to root packages, ignored by npx)
+  - Pin tree-sitter-dart to correct ABI-14-compatible commit
+  - Exact pins for tree-sitter-c (0.23.2), tree-sitter-python (0.23.4), tree-sitter-rust (0.23.1) where next patch requires ^0.22.x
+
+## [1.4.9] - 2026-03-26
+
+### Added
+- **COBOL language support** — standalone regex processor for fixed-format and free-format COBOL, JCL, COPY/REPLACING with pseudotext (#498)
+  - 95% language feature coverage: CALL USING, EXEC SQL/CICS/DLI, DECLARATIVES, SET, INSPECT, INITIALIZE, STRING/UNSTRING, SORT/MERGE with INPUT/OUTPUT PROCEDURE, GO TO DEPENDING ON, MOVE CORRESPONDING, nested programs with per-program scoping
+  - 90+ review findings resolved across 20 review cycles with 241 tests (180 unit + 61 integration)
+  - Benchmarked: CardDemo 12,349 nodes / 9,773 edges in 7.4s; ACAS 14,017 nodes / 15,659 edges in 9.3s
+- **Dart language support** — tree-sitter grammar, type extractors, import/call resolution, Flutter/Riverpod framework detection (#204)
+- **Field type extraction** — Phase 8 & 9: per-language field extractors with generic table-driven factory + TypeScript hand-written extractor, return-type binding in call-processor (#494)
+  - 14 language configs (TS/JS, Python, Go, Rust, C/C++, C#, Java, Kotlin, PHP, Ruby, Swift, Dart)
+  - `FieldVisibility` union type, `extractNames` hook for Ruby multi-attribute
+  - 46 field extraction tests across 5 languages
+- **ORM dataflow detection** for Prisma and Supabase (#511)
+- **Expo Router** file-based route detection (#503)
+- **PHP response shape extraction** for `json_encode` patterns (#502)
+- **Next.js middleware.ts** linked to routes at project level (#504)
+- **Filter panel** — additional node types (#519)
+
+### Changed
+- **BUILT_IN_NAMES** split into per-language provider fields (#523)
+- **tree-sitter** upgraded to 0.25.0 with all grammar packages (#516)
+- **Impact tool** — batched chunking and entry-point grouping for enrichment (#507)
+
+### Fixed
+- **COBOL CRLF** — all `split('\n')` calls use `/\r?\n/` for Windows compatibility
+- **COBOL nested programs** — all graph edges (CALL, CANCEL, CICS, ENTRY, SQL, SEARCH) use `owningModuleId()` for correct attribution
+- **COBOL callAccum** — multi-line CALL USING with verb boundary detection, Area A paragraph guard, EXEC entry flush, division/END PROGRAM flush
+- **Dart language gaps** closed (#524)
+- **Shape check false positives** — quoted keys, DOM leaks, errorKeys (#501)
+- **Python alias gaps** resolved (#505)
+- **Cypher write-detection regex** false positive fixed (#507)
+- **CI** — shape-check-regression test moved to lbug-db project (#518)
+
+## [1.4.8] - 2026-03-23
+
+### Added
+- **Type resolution Milestone D — Phases 10–13** consolidated into a single milestone with full integration test coverage across 11 languages (#387)
+  - Phase A/B/C: overload disambiguation via argument literal types, constructor-visible virtual dispatch via `constructorTypeMap`, `parameterTypes` extraction in `extractMethodSignature`
+  - Phase 14 enhancements: single-pass seeding, Tarjan's SCC for cyclic resolution, cross-file return types
+  - Optional parameter arity resolution
+  - Per-language cross-file binding tests and resolver fixes
+  - Store all overloads in `fileIndex` instead of last-write-wins
+- **Cross-file binding propagation** for multiple languages
+- **HTTP embedding backend** for self-hosted/remote endpoints with dynamic dimensions, batch guards, and dimension mismatch handling (#395)
+- **Markdown file indexing** — headings and cross-links as graph nodes (#399)
+- **MiniMax provider support** (#224)
+- **Codex MCP and skills support** with CLI setup flow and e2e tests
+- **HelpPanel UI** — built-in help for the web interface (#465)
+- **Section node type** registered in `NODE_TABLES` and `NODE_SCHEMA_QUERIES` (#401)
+- **Community and Process node properties** documented in cypher tool description (#411)
+- **Server-mode hydration regression tests**
+- **Pre-commit hooks** via husky for typecheck + unit tests
+
+### Fixed
+- **Python import alias resolution** — `import X as Y` now routes module aliases directly to `moduleAliasMap` in import processor (#417, #461)
+- **Python module-qualified calls** resolved via `moduleAliasMap` (#337)
+- **Python module-qualified constructor calls** (Issue #337)
+- **Heritage/MRO edges** now calculate confidence per resolution tier (#412)
+- **LadybugDB lock** — retry on DB lock with session-safe cleanup (#325)
+- **CORS** — allow private/LAN network origins (#390)
+- **Analyze without git** — allow indexing folders without a `.git` directory (#384)
+- **Web: LadybugDB** — `getAllRows`, `loadServerGraph`, BM25, highlight clearing (#474)
+- **Server-mode hydration** — await server connect hydration flow (#398, #404)
+- **Embedding dimensions** — validate on every vector, not just the first; hard-throw on mismatch
+- **Timeout detection** — always-on dim validation, test hardening
+- **ONNX CUDA** — prevent uncatchable native crash when CUDA libs present but ORT lacks CUDA provider; clarify linux/x64-only
+- **CLI** — run codex mcp add via shell on Windows; write tool output to stdout via fd 1
+- **Stale progress, cross-platform prepare, DEV log** fixes
+- **Import resolution API** simplified per PR #409 review findings (P0–P3)
+- **Auto-labeling** — switched from clustering to z-score method; multi-dim aware Mahalanobis threshold
+- **PR/issue filtering** — fixed prop cutoff issue
+- **Sequential enrichment queries** + stale data detection
+- **package-lock.json** synced with `onnxruntime-node ^1.24.0`
+
+### Changed
+- **Unified language dispatch** with compile-time exhaustive tables
+- **Prepare script simplified** — removed `scripts/prepare.cjs`
+- **Switched from .githooks to husky** for pre-commit hooks
+- **`@claude` workflow** restricted to maintainers and above via `author_association` check
+
+### Performance
+- **O(1) per-chunk synthesis guard** using `boolean[]` instead of Set
+- **`sizeBefore` optimization** in type resolution
+- **Token truncation** improvements
+
+### Chore
+- Strengthened Python module-import tests, un-skipped match/case, added perf guard
+- Added positive and negative tests for all 4 bug fixes
+- E2e tests for stale detection, sequential enrichment, stability (#396)
+- Integration tests for Milestone D across all 11 languages
+- `gitnexus-stable-ops` added to community integrations
+- `.env.example` added for embedding backend configuration
+
 ## [1.4.7] - 2026-03-19
 
 ### Added
