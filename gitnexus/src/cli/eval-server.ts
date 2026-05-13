@@ -221,6 +221,61 @@ export function formatCypherResult(result: any): string {
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
 }
 
+// ─── JSON Wire Format (SPEC-263 T004) ──────────────────────────────────
+// Programmatic consumers (argus codebase loader) need structured rows, not
+// LLM-formatted text. The /tool/cypher.json endpoint skips the markdown +
+// next-step-hint wrapping and returns columns + 2D row matrix directly.
+// This is ~5x faster to parse on the consumer side and avoids round-tripping
+// values through Markdown escapes.
+
+/**
+ * Shape returned by /tool/cypher.json on success:
+ *   { columns: string[], rows: unknown[][], row_count: number }
+ *
+ * On Cypher error / repo-not-found:
+ *   HTTP 200 with { error: "..." }  (parallel to /tool/cypher semantics)
+ */
+export interface CypherJsonResponse {
+  columns: string[];
+  rows: unknown[][];
+  row_count: number;
+}
+
+export function formatCypherAsJson(result: any): CypherJsonResponse | { error: string } {
+  if (result && typeof result === 'object' && 'error' in result) {
+    return { error: String(result.error) };
+  }
+  if (!Array.isArray(result)) {
+    // Cypher executors always return arrays for non-error cases. Coerce other
+    // shapes to an empty result rather than leak unstructured data.
+    return { columns: [], rows: [], row_count: 0 };
+  }
+  if (result.length === 0) {
+    return { columns: [], rows: [], row_count: 0 };
+  }
+  // Determine column order from the union of keys across rows, preserving
+  // first-seen order. Most cypher results have homogeneous keys, so the
+  // first row almost always defines the full set; the union pass is cheap
+  // insurance against optional columns.
+  const colSet = new Set<string>();
+  for (const row of result) {
+    if (row && typeof row === 'object') {
+      for (const k of Object.keys(row)) {
+        if (!colSet.has(k)) colSet.add(k);
+      }
+    }
+  }
+  const columns = Array.from(colSet);
+  const rows: unknown[][] = result.map((row: any) => {
+    if (!row || typeof row !== 'object') return columns.map(() => null);
+    return columns.map((k) => {
+      const v = row[k];
+      return v === undefined ? null : v;
+    });
+  });
+  return { columns, rows, row_count: rows.length };
+}
+
 export function formatDetectChangesResult(result: any): string {
   if (result.error) return `Error: ${result.error}`;
 
@@ -378,6 +433,54 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
         return;
       }
 
+      // JSON cypher (SPEC-263 T004): POST /tool/cypher.json
+      // Returns application/json with shape {columns, rows, row_count} —
+      // bypasses markdown formatting and the next-step-hint footer so
+      // programmatic consumers (argus codebase loader) can parse fast.
+      if (req.method === 'POST' && req.url === '/tool/cypher.json') {
+        const body = await readBody(req);
+        let args: Record<string, any> = {};
+        if (body.trim()) {
+          try {
+            args = JSON.parse(body);
+          } catch {
+            res.setHeader('Content-Type', 'application/json');
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+            return;
+          }
+        }
+
+        const query = typeof args?.query === 'string' ? args.query : '';
+        if (!query) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'query parameter is required' }));
+          return;
+        }
+
+        // Use the same backend method as /tool/cypher's case 'cypher' handler,
+        // but skip formatCypherAsMarkdown — we want the raw row array.
+        const repoName = typeof args?.repo === 'string' ? args.repo : undefined;
+        let raw: any;
+        try {
+          // executeCypher resolves the repo (refreshing the registry on miss,
+          // matching /tool/cypher's LocalBackend.resolveRepo() semantics).
+          raw = await backend.executeCypher(repoName, query);
+        } catch (err: any) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(JSON.stringify({ error: err?.message || 'Cypher failed' }));
+          return;
+        }
+
+        const payload = formatCypherAsJson(raw);
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(200);
+        res.end(JSON.stringify(payload));
+        return;
+      }
+
       // Tool calls: POST /tool/:name
       const toolMatch = req.url?.match(/^\/tool\/(\w+)$/);
       if (req.method === 'POST' && toolMatch) {
@@ -424,6 +527,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     console.error(`  POST /tool/context  — 360-degree symbol view`);
     console.error(`  POST /tool/impact   — blast radius analysis`);
     console.error(`  POST /tool/cypher   — raw Cypher query`);
+    console.error(`  POST /tool/cypher.json — raw Cypher query (JSON wire format)`);
     console.error(`  GET  /health        — health check`);
     console.error(`  POST /shutdown      — graceful shutdown`);
     if (idleTimeoutSec > 0) {
