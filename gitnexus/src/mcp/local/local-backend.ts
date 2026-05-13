@@ -861,7 +861,7 @@ export class LocalBackend {
     }
   }
 
-  async executeCypher(repoName: string, query: string): Promise<any> {
+  async executeCypher(repoName: string | undefined, query: string): Promise<any> {
     const repo = await this.resolveRepo(repoName);
     return this.cypher(repo, { query });
   }
